@@ -45,8 +45,9 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QGraphicsOpacityEffect, QCheckBox,
     QScrollArea, QRadioButton, QButtonGroup, QSizePolicy, QFrame,
+    QLineEdit,
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIntValidator
 
 __version__ = "0.1.0"
 UPDATE_REPO = "snibzyz/inkcopy"
@@ -100,6 +101,22 @@ ICON_PATH = _resource_path("inkcopy.ico")
 # ---------------------------------------------------------------------------
 # Shortcut (.lnk) resolution (Windows)
 # ---------------------------------------------------------------------------
+_LNK_CACHE: dict[str, str | None] = {}
+
+
+def _subprocess_no_window_kwargs() -> dict:
+    # Suppress the console window flash when spawning helper processes from a
+    # PyInstaller --windowed build. No-op on non-Windows.
+    if sys.platform != "win32":
+        return {}
+    import subprocess
+    CREATE_NO_WINDOW = 0x08000000
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {"creationflags": CREATE_NO_WINDOW, "startupinfo": si}
+
+
 def _resolve_shortcut(path: str) -> str | None:
     """Resolve a Windows .lnk shortcut to its target path. Returns None on non-Windows or failure."""
     if sys.platform != "win32":
@@ -107,6 +124,9 @@ def _resolve_shortcut(path: str) -> str | None:
     path = os.path.abspath(path)
     if not path.lower().endswith(".lnk"):
         return None
+    cache_key = path.casefold()
+    if cache_key in _LNK_CACHE:
+        return _LNK_CACHE[cache_key]
     try:
         import subprocess
         env = os.environ.copy()
@@ -123,13 +143,16 @@ def _resolve_shortcut(path: str) -> str | None:
             text=True,
             timeout=5,
             env=env,
+            **_subprocess_no_window_kwargs(),
         )
         if result.returncode == 0 and result.stdout:
             target = result.stdout.strip()
             if target:
+                _LNK_CACHE[cache_key] = target
                 return target
     except Exception:
         pass
+    _LNK_CACHE[cache_key] = None
     return None
 
 
@@ -217,6 +240,19 @@ def _split_stem_trailing_digits(stem: str) -> tuple[str, str] | None:
             continue
         return cand[: m.start(1)], digits
     return None
+
+
+def _detect_chapter_number(name: str) -> int | None:
+    """Extract the auto-detected chapter number from a filename's trailing digits.
+    Works for any width: '7.txt' -> 7, '011.txt' -> 11, 'Title 1234.txt' -> 1234."""
+    stem = Path(name).stem
+    result = _split_stem_trailing_digits(stem)
+    if not result:
+        return None
+    try:
+        return int(result[1])
+    except (ValueError, TypeError):
+        return None
 
 
 def copy_mode_group_output_name(first_ch_name: str, last_ch_name: str) -> tuple[str, str]:
@@ -397,7 +433,10 @@ class SmartClipboardOverlay(QWidget):
         self.prompt_folder: str | None = None
         self.prompt_files: list[tuple[str, str]] = []  # (display_name, path_for_url); .lnk resolved
         self.chapter_folder: str | None = None
-        self.chapter_files: list[tuple[str, str]] = []  # (display_name, path_for_url); .lnk resolved
+        self.chapter_files: list[tuple[str, str]] = []  # current view (may be range-filtered)
+        self._chapter_files_all: list[tuple[str, str]] = []  # full list before range filter
+        self._chapter_idx_by_num: dict[int, int] = {}  # detected chapter num -> index in chapter_files
+        self._chapter_range: tuple[int | None, int | None] | None = None  # (lo, hi) when filter active
         self.output_folder: str | None = None
         self.current_index: int = 0
         self.paused: bool = False
@@ -410,7 +449,8 @@ class SmartClipboardOverlay(QWidget):
         self.minimized: bool = False
         self.toast: ToastNotification | None = None
         self.concurrent_chapters: int = 1  # how many chapters to paste at once
-        self.vocab_file_path: str | None = None  # path to vocab.txt for vocab mode
+        self.vocab_file_path: str | None = None  # resolved full path during a vocab session
+        self.vocab_filename: str = "vocab.txt"  # configurable filename, saved across sessions
         self.vocab_entry_count: int = 0  # track number of entries in vocab file
         self.include_prompt: bool = True  # whether to include prompt files in paste mode
         self.include_chapter: bool = True  # whether to include chapter files in paste mode
@@ -456,6 +496,7 @@ class SmartClipboardOverlay(QWidget):
         # ---- build UI -------------------------------------------------------
         self._build_ui()
         self._apply_styles()
+        self._apply_mode_visibility()
 
         # ---- load saved config -----------------------------------------------
         self._load_saved_config()
@@ -544,7 +585,7 @@ class SmartClipboardOverlay(QWidget):
 
         # -- mode toggle
         mode_row = QHBoxLayout()
-        self.mode_btn = QPushButton("[PASTE MODE]  Prompt+Chapter -> Clipboard")
+        self.mode_btn = QPushButton("📋 [PASTE MODE]  Prompt+Chapter → Clipboard")
         self.mode_btn.setObjectName("modeBtn")
         self.mode_btn.clicked.connect(self._toggle_mode)
         mode_row.addWidget(self.mode_btn)
@@ -564,18 +605,31 @@ class SmartClipboardOverlay(QWidget):
 
         # -- prompt selector
         prompt_row = QHBoxLayout()
-        self.prompt_btn = QPushButton("Prompt Folder")
+        self.prompt_btn = QPushButton("📁 Prompt Folder")
         self.prompt_btn.setObjectName("actionBtn")
         self.prompt_btn.clicked.connect(self._select_prompt)
+        self.prompt_files_btn = QPushButton("📄 Files…")
+        self.prompt_files_btn.setObjectName("controlBtn")
+        self.prompt_files_btn.setToolTip("เลือกหลายไฟล์ prompt โดยตรง (แทนที่ของเดิม)")
+        self.prompt_files_btn.clicked.connect(self._select_prompt_files_picker)
+        self.prompt_add_files_btn = QPushButton("➕ เพิ่ม")
+        self.prompt_add_files_btn.setObjectName("addBtn")
+        self.prompt_add_files_btn.setToolTip("เพิ่มไฟล์ prompt ทีหลัง (ไม่ลบของเดิม)")
+        self.prompt_add_files_btn.clicked.connect(self._add_prompt_files_picker)
         self.prompt_info = QLabel("--")
         self.prompt_info.setObjectName("info")
         self.prompt_info.setTextFormat(Qt.TextFormat.RichText)
         prompt_row.addWidget(self.prompt_btn)
+        prompt_row.addWidget(self.prompt_files_btn)
+        prompt_row.addWidget(self.prompt_add_files_btn)
         prompt_row.addWidget(self.prompt_info, 1)
-        content_layout.addLayout(prompt_row)
+        self._row_prompt = QWidget()
+        self._row_prompt.setLayout(prompt_row)
+        content_layout.addWidget(self._row_prompt)
 
         prompt_list_caption = QLabel("Prompt — แต่ละไฟล์เลือกวางเป็นไฟล์หรือข้อความ (เรียงชื่อ)")
         prompt_list_caption.setObjectName("info")
+        self._row_prompt_caption = prompt_list_caption
         content_layout.addWidget(prompt_list_caption)
 
         self.prompt_list_scroll = QScrollArea()
@@ -599,15 +653,70 @@ class SmartClipboardOverlay(QWidget):
 
         # -- chapter folder selector
         chapter_row = QHBoxLayout()
-        self.chapter_btn = QPushButton("Chapter Folder")
+        self.chapter_btn = QPushButton("📁 Chapter Folder")
         self.chapter_btn.setObjectName("actionBtn")
         self.chapter_btn.clicked.connect(self._select_chapters)
+        self.chapter_files_btn = QPushButton("📄 Files…")
+        self.chapter_files_btn.setObjectName("controlBtn")
+        self.chapter_files_btn.setToolTip("เลือกหลายไฟล์ chapter โดยตรง (แทนที่ของเดิม)")
+        self.chapter_files_btn.clicked.connect(self._select_chapter_files_picker)
+        self.chapter_add_files_btn = QPushButton("➕ เพิ่ม")
+        self.chapter_add_files_btn.setObjectName("addBtn")
+        self.chapter_add_files_btn.setToolTip("เพิ่มไฟล์ chapter ทีหลัง (ไม่ลบของเดิม)")
+        self.chapter_add_files_btn.clicked.connect(self._add_chapter_files_picker)
         self.chapter_info = QLabel("--")
         self.chapter_info.setObjectName("info")
         self.chapter_info.setTextFormat(Qt.TextFormat.RichText)
         chapter_row.addWidget(self.chapter_btn)
+        chapter_row.addWidget(self.chapter_files_btn)
+        chapter_row.addWidget(self.chapter_add_files_btn)
         chapter_row.addWidget(self.chapter_info, 1)
-        content_layout.addLayout(chapter_row)
+        self._row_chapter = QWidget()
+        self._row_chapter.setLayout(chapter_row)
+        content_layout.addWidget(self._row_chapter)
+
+        # -- chapter range filter + jump-to-chapter
+        range_row = QHBoxLayout()
+        range_label = QLabel("ตอนที่:")
+        range_label.setObjectName("info")
+        self.range_from = QLineEdit()
+        self.range_from.setObjectName("numberInput")
+        self.range_from.setPlaceholderText("From")
+        self.range_from.setFixedWidth(70)
+        self.range_from.setValidator(QIntValidator(0, 999999, self))
+        self.range_from.returnPressed.connect(self._on_range_apply)
+        self.range_to = QLineEdit()
+        self.range_to.setObjectName("numberInput")
+        self.range_to.setPlaceholderText("To")
+        self.range_to.setFixedWidth(70)
+        self.range_to.setValidator(QIntValidator(0, 999999, self))
+        self.range_to.returnPressed.connect(self._on_range_apply)
+        self.range_apply_btn = QPushButton("✓ Apply")
+        self.range_apply_btn.setObjectName("controlBtn")
+        self.range_apply_btn.clicked.connect(self._on_range_apply)
+        self.range_reset_btn = QPushButton("↺ Reset")
+        self.range_reset_btn.setObjectName("controlBtn")
+        self.range_reset_btn.clicked.connect(self._on_range_reset)
+        range_row.addWidget(range_label)
+        range_row.addWidget(self.range_from)
+        range_row.addWidget(QLabel("–"))
+        range_row.addWidget(self.range_to)
+        range_row.addWidget(self.range_apply_btn)
+        range_row.addWidget(self.range_reset_btn)
+        jump_label = QLabel("ไปตอนที่:")
+        jump_label.setObjectName("info")
+        self.jump_input = QLineEdit()
+        self.jump_input.setObjectName("numberInput")
+        self.jump_input.setPlaceholderText("เช่น 411")
+        self.jump_input.setFixedWidth(80)
+        self.jump_input.setValidator(QIntValidator(0, 999999, self))
+        self.jump_input.returnPressed.connect(self._on_jump_submit)
+        range_row.addWidget(jump_label)
+        range_row.addWidget(self.jump_input)
+        range_row.addStretch()
+        self._row_range_jump = QWidget()
+        self._row_range_jump.setLayout(range_row)
+        content_layout.addWidget(self._row_range_jump)
 
         chapter_paste_row = QHBoxLayout()
         chapter_paste_label = QLabel("นิยาย (Chapter) วางเป็น:")
@@ -625,18 +734,38 @@ class SmartClipboardOverlay(QWidget):
         chapter_paste_row.addWidget(self.chapter_paste_file_radio)
         chapter_paste_row.addWidget(self.chapter_paste_text_radio)
         chapter_paste_row.addStretch()
-        content_layout.addLayout(chapter_paste_row)
+        self._row_chapter_paste = QWidget()
+        self._row_chapter_paste.setLayout(chapter_paste_row)
+        content_layout.addWidget(self._row_chapter_paste)
 
-        # -- output folder selector (for Copy mode)
+        # -- output folder selector (for Copy / Vocab modes)
         output_row = QHBoxLayout()
-        self.output_btn = QPushButton("Output Folder")
+        self.output_btn = QPushButton("📁 Output Folder")
         self.output_btn.setObjectName("actionBtn")
         self.output_btn.clicked.connect(self._select_output)
         self.output_info = QLabel("--")
         self.output_info.setObjectName("info")
         output_row.addWidget(self.output_btn)
         output_row.addWidget(self.output_info, 1)
-        content_layout.addLayout(output_row)
+        self._row_output = QWidget()
+        self._row_output.setLayout(output_row)
+        content_layout.addWidget(self._row_output)
+
+        # -- vocab filename input (Vocab mode only)
+        vocab_row = QHBoxLayout()
+        vocab_label = QLabel("Vocab file:")
+        vocab_label.setObjectName("info")
+        self.vocab_filename_input = QLineEdit(self.vocab_filename)
+        self.vocab_filename_input.setObjectName("numberInput")
+        self.vocab_filename_input.setPlaceholderText("vocab.txt")
+        self.vocab_filename_input.setFixedWidth(200)
+        self.vocab_filename_input.editingFinished.connect(self._on_vocab_filename_changed)
+        vocab_row.addWidget(vocab_label)
+        vocab_row.addWidget(self.vocab_filename_input)
+        vocab_row.addStretch()
+        self._row_vocab = QWidget()
+        self._row_vocab.setLayout(vocab_row)
+        content_layout.addWidget(self._row_vocab)
 
         # -- concurrent chapters selector (for Paste mode)
         concurrent_row = QHBoxLayout()
@@ -658,7 +787,9 @@ class SmartClipboardOverlay(QWidget):
         concurrent_row.addWidget(self.concurrent_value_label)
         concurrent_row.addWidget(self.concurrent_plus_btn)
         concurrent_row.addStretch()
-        content_layout.addLayout(concurrent_row)
+        self._row_concurrent = QWidget()
+        self._row_concurrent.setLayout(concurrent_row)
+        content_layout.addWidget(self._row_concurrent)
 
         # -- content start line selector (for Copy mode)
         line_row = QHBoxLayout()
@@ -680,7 +811,9 @@ class SmartClipboardOverlay(QWidget):
         line_row.addWidget(self.line_value_label)
         line_row.addWidget(self.line_plus_btn)
         line_row.addStretch()
-        content_layout.addLayout(line_row)
+        self._row_line = QWidget()
+        self._row_line.setLayout(line_row)
+        content_layout.addWidget(self._row_line)
 
         copy_checkbox_row = QHBoxLayout()
         self.copy_template_checkbox = QCheckBox("Copy Mode: include filename + spacing")
@@ -689,7 +822,9 @@ class SmartClipboardOverlay(QWidget):
         self.copy_template_checkbox.stateChanged.connect(self._on_copy_template_checkbox_changed)
         copy_checkbox_row.addWidget(self.copy_template_checkbox)
         copy_checkbox_row.addStretch()
-        content_layout.addLayout(copy_checkbox_row)
+        self._row_copy_template = QWidget()
+        self._row_copy_template.setLayout(copy_checkbox_row)
+        content_layout.addWidget(self._row_copy_template)
 
         # -- checkbox controls for prompt and chapter inclusion
         checkbox_row = QHBoxLayout()
@@ -706,10 +841,12 @@ class SmartClipboardOverlay(QWidget):
         checkbox_row.addWidget(self.prompt_checkbox)
         checkbox_row.addWidget(self.chapter_checkbox)
         checkbox_row.addStretch()
-        content_layout.addLayout(checkbox_row)
+        self._row_include_checkbox = QWidget()
+        self._row_include_checkbox.setLayout(checkbox_row)
+        content_layout.addWidget(self._row_include_checkbox)
 
         # -- fetch (refresh file lists after moving/adding files)
-        self.fetch_btn = QPushButton("Fetch — อัปเดตรายการไฟล์")
+        self.fetch_btn = QPushButton("🔄 Fetch — อัปเดตรายการไฟล์")
         self.fetch_btn.setObjectName("actionBtn")
         self.fetch_btn.clicked.connect(self._fetch_folders)
         content_layout.addWidget(self.fetch_btn)
@@ -725,19 +862,19 @@ class SmartClipboardOverlay(QWidget):
 
         # -- control buttons row
         controls_row = QHBoxLayout()
-        self.prev_btn = QPushButton("< Prev")
+        self.prev_btn = QPushButton("◀ Prev")
         self.prev_btn.setObjectName("controlBtn")
         self.prev_btn.clicked.connect(self._go_prev)
 
-        self.pause_btn = QPushButton("|| Pause")
+        self.pause_btn = QPushButton("⏸ Pause")
         self.pause_btn.setObjectName("controlBtn")
         self.pause_btn.clicked.connect(self._toggle_pause)
 
-        self.next_btn = QPushButton("Next >")
+        self.next_btn = QPushButton("Next ▶")
         self.next_btn.setObjectName("controlBtn")
         self.next_btn.clicked.connect(self._go_next)
 
-        self.reset_btn = QPushButton("Reset")
+        self.reset_btn = QPushButton("↺ Reset")
         self.reset_btn.setObjectName("controlBtn")
         self.reset_btn.clicked.connect(self._reset_index)
 
@@ -854,6 +991,94 @@ class SmartClipboardOverlay(QWidget):
                 background: #3d7a3d;
                 color: #ffffff;
             }
+            QCheckBox {
+                spacing: 8px;
+                color: #e0e0e0;
+                padding: 2px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #6a7a8a;
+                border-radius: 3px;
+                background: rgba(255,255,255,0.05);
+            }
+            QCheckBox::indicator:hover {
+                border-color: #4a9eff;
+                background: rgba(74,158,255,0.10);
+            }
+            QCheckBox::indicator:checked {
+                background: #2680eb;
+                border: 1px solid #4a9eff;
+                image: none;
+            }
+            QCheckBox::indicator:checked:hover {
+                background: #3a8df0;
+            }
+            QRadioButton {
+                spacing: 8px;
+                color: #e0e0e0;
+                padding: 2px;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #6a7a8a;
+                border-radius: 8px;
+                background: rgba(255,255,255,0.05);
+            }
+            QRadioButton::indicator:hover {
+                border-color: #4a9eff;
+                background: rgba(74,158,255,0.10);
+            }
+            QRadioButton::indicator:checked {
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                    stop:0 #ffffff, stop:0.40 #ffffff, stop:0.45 #2680eb, stop:1 #2680eb);
+                border: 1px solid #4a9eff;
+            }
+            QRadioButton::indicator:checked:hover {
+                border-color: #6ab2ff;
+            }
+            #numberInput {
+                background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.20);
+                border-radius: 6px;
+                padding: 4px 8px;
+                color: #ffffff;
+                font-size: 12px;
+                selection-background-color: #2680eb;
+            }
+            #numberInput:focus {
+                border: 1px solid #4a9eff;
+                background: rgba(74,158,255,0.10);
+            }
+            #addBtn {
+                background: rgba(80,200,120,0.18);
+                border: 1px solid rgba(80,200,120,0.45);
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: #8eecb0;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            #addBtn:hover {
+                background: rgba(80,200,120,0.32);
+                color: #ffffff;
+            }
+            #rowRemoveBtn {
+                background: rgba(255,80,80,0.10);
+                border: 1px solid rgba(255,80,80,0.30);
+                border-radius: 4px;
+                color: #ff8a8a;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0;
+            }
+            #rowRemoveBtn:hover {
+                background: rgba(255,80,80,0.30);
+                color: #ffffff;
+                border-color: #ff5555;
+            }
         """)
 
     # override paintEvent so we get the rounded dark translucent background
@@ -945,6 +1170,9 @@ class SmartClipboardOverlay(QWidget):
         self.chapter_paste_as_text = cfg.get("chapter_paste_as_text", False)
         self.chapter_paste_text_radio.setChecked(self.chapter_paste_as_text)
         self.chapter_paste_file_radio.setChecked(not self.chapter_paste_as_text)
+        self.vocab_filename = (cfg.get("vocab_filename") or "vocab.txt").strip() or "vocab.txt"
+        if hasattr(self, "vocab_filename_input"):
+            self.vocab_filename_input.setText(self.vocab_filename)
         self.staged_ms_after_user_paste = max(50, min(int(cfg.get("staged_ms_after_user_paste", 300)), 8000))
         self.staged_ms_clipboard_to_ctrl_v = max(30, min(int(cfg.get("staged_ms_clipboard_to_ctrl_v", 60)), 3000))
         self.staged_ms_after_text_paste = max(50, min(int(cfg.get("staged_ms_after_text_paste", 150)), 8000))
@@ -963,6 +1191,7 @@ class SmartClipboardOverlay(QWidget):
             "copy_template_enabled": self.copy_template_enabled,
             "prompt_paste_modes": self.prompt_paste_modes,
             "chapter_paste_as_text": self.chapter_paste_as_text,
+            "vocab_filename": self.vocab_filename,
             "staged_ms_after_user_paste": self.staged_ms_after_user_paste,
             "staged_ms_clipboard_to_ctrl_v": self.staged_ms_clipboard_to_ctrl_v,
             "staged_ms_after_text_paste": self.staged_ms_after_text_paste,
@@ -1026,6 +1255,10 @@ class SmartClipboardOverlay(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select Chapter Folder", start)
         if folder:
             self.chapter_folder = folder
+            self._chapter_range = None
+            if hasattr(self, "range_from"):
+                self.range_from.clear()
+                self.range_to.clear()
             self._scan_chapter_folder()
             self.current_index = 0
             self._save_config()
@@ -1034,7 +1267,9 @@ class SmartClipboardOverlay(QWidget):
     def _scan_chapter_folder(self):
         base = self.chapter_folder
         if not base:
+            self._chapter_files_all = []
             self.chapter_files = []
+            self._chapter_idx_by_num = {}
             self.chapter_info.setText("--")
             return
         if base.lower().endswith(".lnk"):
@@ -1042,7 +1277,9 @@ class SmartClipboardOverlay(QWidget):
             if resolved and os.path.isdir(resolved):
                 base = resolved
         if not os.path.isdir(base):
+            self._chapter_files_all = []
             self.chapter_files = []
+            self._chapter_idx_by_num = {}
             self.chapter_info.setText("--")
             return
         files = [
@@ -1063,11 +1300,280 @@ class SmartClipboardOverlay(QWidget):
                     entries.append((f, path))
             else:
                 entries.append((f, path))
-        self.chapter_files = entries
+        self._chapter_files_all = entries
+        self._apply_chapter_range_filter(reset_current_index=False)
+
+    # ---------------- chapter number / range helpers ----------------
+    def _rebuild_chapter_index_map(self):
+        self._chapter_idx_by_num = {}
+        for i, (name, _) in enumerate(self.chapter_files):
+            n = _detect_chapter_number(name)
+            if n is not None:
+                self._chapter_idx_by_num.setdefault(n, i)
+
+    def _apply_chapter_range_filter(self, *, reset_current_index: bool):
+        """Rebuild self.chapter_files from self._chapter_files_all using self._chapter_range."""
+        if self._chapter_range is None:
+            self.chapter_files = list(self._chapter_files_all)
+        else:
+            lo, hi = self._chapter_range
+            filtered: list[tuple[str, str]] = []
+            for name, path in self._chapter_files_all:
+                n = _detect_chapter_number(name)
+                if n is None:
+                    continue
+                if lo is not None and n < lo:
+                    continue
+                if hi is not None and n > hi:
+                    continue
+                filtered.append((name, path))
+            self.chapter_files = filtered
+        if reset_current_index:
+            self.current_index = 0
+        elif self.chapter_files and self.current_index >= len(self.chapter_files):
+            self.current_index = max(0, len(self.chapter_files) - 1)
+        self._rebuild_chapter_index_map()
+
         n = len(self.chapter_files)
-        self.chapter_info.setText(
-            f"<b>{n}</b> ไฟล์ · [{Path(base).name}]" if n else "ไม่มีไฟล์ .md/.txt/.lnk"
+        base_name = Path(self.chapter_folder).name if self.chapter_folder else ""
+        suffix = ""
+        if self._chapter_range is not None:
+            lo, hi = self._chapter_range
+            # Treat 0 / negative as no bound so we never display 'ตอน 0000'.
+            lo_disp = lo if (lo is not None and lo > 0) else None
+            hi_disp = hi if (hi is not None and hi > 0) else None
+            if lo_disp is not None or hi_disp is not None:
+                lo_s = f"{lo_disp:04d}" if lo_disp is not None else "..."
+                hi_s = f"{hi_disp:04d}" if hi_disp is not None else "..."
+                suffix = f" · ตอน {lo_s}–{hi_s}"
+        if n:
+            self.chapter_info.setText(f"<b>{n}</b> ไฟล์ · [{base_name}]{suffix}")
+        else:
+            self.chapter_info.setText("ไม่มีไฟล์ .md/.txt/.lnk" if not self._chapter_files_all else f"ไม่มีไฟล์ใน{suffix}")
+
+    def _ch_num_at(self, idx: int) -> int | None:
+        if 0 <= idx < len(self.chapter_files):
+            return _detect_chapter_number(self.chapter_files[idx][0])
+        return None
+
+    def _ch_label(self, idx: int) -> str:
+        n = self._ch_num_at(idx)
+        if n is not None:
+            return f"ตอน {n:04d}"
+        if 0 <= idx < len(self.chapter_files):
+            return self.chapter_files[idx][0]
+        return ""
+
+    def _ch_range_label(self, start_idx: int, end_idx: int) -> str:
+        a = self._ch_num_at(start_idx)
+        b = self._ch_num_at(end_idx)
+        if a is not None and b is not None:
+            if a == b:
+                return f"ตอน {a:04d}"
+            return f"ตอน {a:04d}–{b:04d}"
+        return f"#{start_idx+1}-#{end_idx+1}"
+
+    def _on_jump_submit(self):
+        text = self.jump_input.text().strip()
+        if not text:
+            return
+        try:
+            n = int(text)
+        except ValueError:
+            self.jump_input.clear()
+            return
+        target_idx = self._chapter_idx_by_num.get(n)
+        if target_idx is None:
+            for i, (name, _) in enumerate(self.chapter_files):
+                num = _detect_chapter_number(name)
+                if num is not None and num >= n:
+                    target_idx = i
+                    break
+        if target_idx is not None:
+            # Snap to the START of the group containing the target so groups stay
+            # aligned to the file-list rhythm — e.g. start=601, concurrent=3:
+            # jump 602 → 601–603, jump 606 → 604–606, jump 611 → 610–612.
+            group = max(1, self.concurrent_chapters)
+            self.current_index = (target_idx // group) * group
+            self._update_status()
+        self.jump_input.clear()
+
+    def _on_range_apply(self):
+        lo_text = self.range_from.text().strip()
+        hi_text = self.range_to.text().strip()
+        try:
+            lo = int(lo_text) if lo_text else None
+            hi = int(hi_text) if hi_text else None
+        except ValueError:
+            return
+        if lo is not None and lo <= 0:
+            lo = None
+        if hi is not None and hi <= 0:
+            hi = None
+        if lo is None and hi is None:
+            self._chapter_range = None
+        else:
+            if lo is not None and hi is not None and lo > hi:
+                lo, hi = hi, lo
+            self._chapter_range = (lo, hi)
+        self._apply_chapter_range_filter(reset_current_index=True)
+        self._update_status()
+
+    def _on_range_reset(self):
+        self.range_from.clear()
+        self.range_to.clear()
+        self._chapter_range = None
+        self._apply_chapter_range_filter(reset_current_index=True)
+        self._update_status()
+
+    # ---------------- file pickers (Open Files / Append) ----------------
+    def _select_chapter_files_picker(self):
+        self._chapter_files_picker(append=False)
+
+    def _add_chapter_files_picker(self):
+        self._chapter_files_picker(append=True)
+
+    def _chapter_files_picker(self, *, append: bool):
+        start = self.chapter_folder or ""
+        title = "Add Chapter Files" if append else "Select Chapter Files"
+        files, _ = QFileDialog.getOpenFileNames(
+            self, title, start, "Text Files (*.txt *.md *.lnk);;All Files (*)"
         )
+        if not files:
+            return
+        new_entries: list[tuple[str, str]] = []
+        for full in files:
+            name = os.path.basename(full)
+            path = _resolve_path_maybe_shortcut(os.path.dirname(full), name)
+            if name.lower().endswith(".lnk"):
+                if path and os.path.isfile(path):
+                    new_entries.append((name, path))
+            else:
+                new_entries.append((name, path))
+        if append and self._chapter_files_all:
+            existing_paths = {p for _, p in self._chapter_files_all}
+            merged = list(self._chapter_files_all)
+            for name, path in new_entries:
+                if path not in existing_paths:
+                    merged.append((name, path))
+                    existing_paths.add(path)
+            merged = natsort.natsorted(merged, key=lambda t: t[0])
+            self._chapter_files_all = merged
+        else:
+            sorted_new = natsort.natsorted(new_entries, key=lambda t: t[0])
+            self._chapter_files_all = sorted_new
+            try:
+                common = os.path.commonpath([p for p in files])
+            except ValueError:
+                common = os.path.dirname(files[0])
+            if not os.path.isdir(common):
+                common = os.path.dirname(files[0])
+            self.chapter_folder = common
+            self._chapter_range = None
+            self.range_from.clear()
+            self.range_to.clear()
+        self._apply_chapter_range_filter(reset_current_index=not append)
+        self._save_config()
+        self._try_init()
+
+    def _select_prompt_files_picker(self):
+        self._prompt_files_picker(append=False)
+
+    def _add_prompt_files_picker(self):
+        self._prompt_files_picker(append=True)
+
+    def _prompt_files_picker(self, *, append: bool):
+        start = self.prompt_folder or ""
+        title = "Add Prompt Files" if append else "Select Prompt Files"
+        files, _ = QFileDialog.getOpenFileNames(
+            self, title, start, "Text Files (*.txt *.md *.lnk);;All Files (*)"
+        )
+        if not files:
+            return
+        new_entries: list[tuple[str, str]] = []
+        for full in files:
+            name = os.path.basename(full)
+            path = _resolve_path_maybe_shortcut(os.path.dirname(full), name)
+            if name.lower().endswith(".lnk"):
+                if path and os.path.isfile(path):
+                    new_entries.append((name, path))
+            else:
+                new_entries.append((name, path))
+        if append and self.prompt_files:
+            existing_paths = {p for _, p in self.prompt_files}
+            merged = list(self.prompt_files)
+            for name, path in new_entries:
+                if path not in existing_paths:
+                    merged.append((name, path))
+                    existing_paths.add(path)
+            self.prompt_files = sorted(merged, key=lambda t: t[0].lower())
+        else:
+            self.prompt_files = sorted(new_entries, key=lambda t: t[0].lower())
+            try:
+                common = os.path.commonpath([p for p in files])
+            except ValueError:
+                common = os.path.dirname(files[0])
+            if not os.path.isdir(common):
+                common = os.path.dirname(files[0])
+            self.prompt_folder = common
+        n = len(self.prompt_files)
+        self.prompt_info.setText(f"<b>{n}</b> ไฟล์ · [picked]" if n else "--")
+        self._rebuild_prompt_file_rows()
+        self._save_config()
+        self._try_init()
+
+    def _remove_prompt_file(self, display_name: str):
+        before = len(self.prompt_files)
+        self.prompt_files = [(n, p) for (n, p) in self.prompt_files if n != display_name]
+        if len(self.prompt_files) == before:
+            return
+        self.prompt_paste_modes.pop(display_name, None)
+        n = len(self.prompt_files)
+        base = Path(self.prompt_folder).name if self.prompt_folder else ""
+        self.prompt_info.setText(f"<b>{n}</b> ไฟล์ · [{base}]" if n else "--")
+        self._rebuild_prompt_file_rows()
+        self._save_config()
+        if self.mode == self.MODE_PASTE:
+            self._load_clipboard_paste_mode()
+
+    def _on_vocab_filename_changed(self):
+        text = (self.vocab_filename_input.text() or "").strip()
+        if not text:
+            text = "vocab.txt"
+        if not os.path.splitext(text)[1]:
+            text += ".txt"
+        if text == self.vocab_filename:
+            return
+        self.vocab_filename = text
+        self.vocab_filename_input.setText(text)
+        if self.mode == self.MODE_VOCAB:
+            self.mode_btn.setText(f"📖 [VOCAB MODE]  Clipboard → {self.vocab_filename} (append)")
+            self._init_vocab_mode()
+        self._save_config()
+
+    def _apply_mode_visibility(self):
+        is_paste = self.mode == self.MODE_PASTE
+        is_copy = self.mode == self.MODE_COPY
+        is_vocab = self.mode == self.MODE_VOCAB
+
+        self._row_prompt.setVisible(is_paste)
+        self._row_prompt_caption.setVisible(is_paste)
+        self.prompt_list_scroll.setVisible(is_paste)
+        self._row_chapter_paste.setVisible(is_paste)
+        self._row_include_checkbox.setVisible(is_paste)
+
+        self._row_chapter.setVisible(is_paste or is_copy)
+        self._row_range_jump.setVisible(is_paste or is_copy)
+        self._row_concurrent.setVisible(is_paste or is_copy)
+
+        self._row_output.setVisible(is_copy or is_vocab)
+
+        self._row_line.setVisible(is_copy)
+        self._row_copy_template.setVisible(is_copy)
+
+        self._row_vocab.setVisible(is_vocab)
+
+        self.adjustSize()
 
     def _increase_line(self):
         self.content_start_line += 1
@@ -1178,9 +1684,18 @@ class SmartClipboardOverlay(QWidget):
                     self._load_clipboard_paste_mode()
 
             grp.buttonClicked.connect(_on_prompt_row_mode)
+
+            remove_btn = QPushButton("✕")
+            remove_btn.setObjectName("rowRemoveBtn")
+            remove_btn.setToolTip("ลบไฟล์นี้ออกจากรายการ (ไฟล์ต้นฉบับไม่ถูกลบ)")
+            remove_btn.setFixedSize(22, 22)
+            remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            remove_btn.clicked.connect(lambda _checked=False, dn=display_name: self._remove_prompt_file(dn))
+
             row_h.addWidget(nm, 1)
             row_h.addWidget(rb_file, 0)
             row_h.addWidget(rb_text, 0)
+            row_h.addWidget(remove_btn, 0)
             self.prompt_rows_layout.addWidget(row)
         self.prompt_rows_layout.addStretch()
 
@@ -1227,7 +1742,7 @@ class SmartClipboardOverlay(QWidget):
     def _toggle_mode(self):
         if self.mode == self.MODE_PASTE:
             self.mode = self.MODE_COPY
-            self.mode_btn.setText("[COPY MODE]  Clipboard text -> .txt files")
+            self.mode_btn.setText("📝 [COPY MODE]  Clipboard text → .txt files")
             self.mode_btn.setStyleSheet(
                 "#modeBtn { background: rgba(255,160,50,0.20); border: 1px solid rgba(255,160,50,0.40); "
                 "border-radius: 8px; padding: 8px 14px; color: #ffb347; font-size: 13px; font-weight: bold; }"
@@ -1236,7 +1751,7 @@ class SmartClipboardOverlay(QWidget):
             self._start_clipboard_monitor()
         elif self.mode == self.MODE_COPY:
             self.mode = self.MODE_VOCAB
-            self.mode_btn.setText("[VOCAB MODE]  Clipboard -> vocab.txt (append)")
+            self.mode_btn.setText(f"📖 [VOCAB MODE]  Clipboard → {self.vocab_filename} (append)")
             self.mode_btn.setStyleSheet(
                 "#modeBtn { background: rgba(180,100,255,0.20); border: 1px solid rgba(180,100,255,0.40); "
                 "border-radius: 8px; padding: 8px 14px; color: #c896ff; font-size: 13px; font-weight: bold; }"
@@ -1245,11 +1760,12 @@ class SmartClipboardOverlay(QWidget):
             self._init_vocab_mode()
         else:
             self.mode = self.MODE_PASTE
-            self.mode_btn.setText("[PASTE MODE]  Prompt+Chapter -> Clipboard")
+            self.mode_btn.setText("📋 [PASTE MODE]  Prompt+Chapter → Clipboard")
             self.mode_btn.setStyleSheet("")
             self._stop_clipboard_monitor()
         self.paused = False
-        self.pause_btn.setText("|| Pause")
+        self.pause_btn.setText("⏸ Pause")
+        self._apply_mode_visibility()
         self._update_status()
 
     # ============================================================ INIT SYSTEM
@@ -1263,12 +1779,16 @@ class SmartClipboardOverlay(QWidget):
         self._update_status()
 
     def _init_vocab_mode(self):
-        """Initialize vocab mode: create vocab.txt in output folder if needed."""
+        """Initialize vocab mode: create the configured vocab file in output folder if needed."""
         if not self.output_folder:
             self.status_label.setText("!! Set Output Folder first for vocab mode")
             return
-        
-        self.vocab_file_path = os.path.join(self.output_folder, "vocab.txt")
+
+        filename = (self.vocab_filename or "vocab.txt").strip() or "vocab.txt"
+        if not os.path.splitext(filename)[1]:
+            filename += ".txt"
+        self.vocab_filename = filename
+        self.vocab_file_path = os.path.join(self.output_folder, filename)
         
         # Count existing entries if file exists
         if os.path.isfile(self.vocab_file_path):
@@ -1379,13 +1899,14 @@ class SmartClipboardOverlay(QWidget):
             f.write(content)
 
         end_slot = self.current_index + chapters_in_round
+        ch_label = self._ch_range_label(self.current_index, end_slot - 1)
         if chapters_in_round == 1:
-            prog = f"({self.current_index + 1}/{total})"
+            prog = f"{ch_label}  ({self.current_index + 1}/{total})"
         else:
-            prog = f"({self.current_index + 1}-{end_slot}/{total})"
-        self._show_toast(f"💾 SAVED: {out_name} {prog}", "copy")
+            prog = f"{ch_label}  ({self.current_index + 1}-{end_slot}/{total})"
+        self._show_toast(f"💾 SAVED: {prog}", "copy")
 
-        self.status_label.setText(f"[SAVED] {out_name}  {prog}")
+        self.status_label.setText(f"[SAVED] {prog}")
         self.status_label.setStyleSheet(
             "#status { color: #80ff80; background: rgba(255,255,255,0.07); "
             "border-radius: 8px; padding: 6px 10px; font-size: 14px; }"
@@ -1506,15 +2027,16 @@ class SmartClipboardOverlay(QWidget):
             pc = len(self.prompt_files)
             
             if chapters_to_paste == 1:
-                ch_name = self.chapter_files[self.current_index][0]
+                ch_label = self._ch_label(self.current_index)
                 self.status_label.setText(
-                    f"[READY] {pc} Prompt(s) + {ch_name}  ({self.current_index + 1}/{total})"
+                    f"[READY] {pc} Prompt(s) + {ch_label}  ({self.current_index + 1}/{total})"
                 )
             else:
                 end_idx = self.current_index + chapters_to_paste - 1
                 rounds_remaining = (chapters_remaining + self.concurrent_chapters - 1) // self.concurrent_chapters
+                ch_label = self._ch_range_label(self.current_index, end_idx)
                 self.status_label.setText(
-                    f"[READY] {pc} Prompt(s) + {chapters_to_paste} chapters  ({self.current_index + 1}-{end_idx + 1}/{total}, {rounds_remaining} rounds left)"
+                    f"[READY] {pc} Prompt(s) + {ch_label}  ({self.current_index + 1}-{end_idx + 1}/{total}, {rounds_remaining} rounds left)"
                 )
         elif self.mode == self.MODE_COPY:
             if not self.chapter_files:
@@ -1527,19 +2049,17 @@ class SmartClipboardOverlay(QWidget):
             chapters_remaining = total - self.current_index
             chapters_waiting = min(self.concurrent_chapters, chapters_remaining)
             if chapters_waiting == 1:
-                ch_name = self.chapter_files[self.current_index][0]
+                ch_label = self._ch_label(self.current_index)
                 self.status_label.setText(
-                    f"[WAITING] Copy text for: {ch_name}  ({self.current_index + 1}/{total})"
+                    f"[WAITING] Copy text for: {ch_label}  ({self.current_index + 1}/{total})"
                 )
             else:
                 end_idx = self.current_index + chapters_waiting - 1
-                first_name = self.chapter_files[self.current_index][0]
-                last_name = self.chapter_files[end_idx][0]
-                hint_name, _ = copy_mode_group_output_name(first_name, last_name)
                 rounds_left = (chapters_remaining + self.concurrent_chapters - 1) // self.concurrent_chapters
+                ch_label = self._ch_range_label(self.current_index, end_idx)
                 self.status_label.setText(
-                    f"[WAITING] Copy text for: {hint_name}  "
-                    f"(chapters {self.current_index + 1}-{end_idx + 1}/{total}, {rounds_left} saves left)"
+                    f"[WAITING] Copy text for: {ch_label}  "
+                    f"({self.current_index + 1}-{end_idx + 1}/{total}, {rounds_left} saves left)"
                 )
         else:  # VOCAB mode
             self.status_label.setText(
@@ -1641,12 +2161,13 @@ class SmartClipboardOverlay(QWidget):
         pc = len(self.prompt_files)
 
         if chapters_pasted == 1:
-            ch_name = self.chapter_files[self.current_index][0]
-            self._show_toast(f"📋 PASTED: {pc} Prompt(s) + {ch_name}", "paste")
+            ch_label = self._ch_label(self.current_index)
+            self._show_toast(f"📋 PASTED: {pc} Prompt(s) + {ch_label}", "paste")
         else:
             end_idx = self.current_index + chapters_pasted - 1
+            ch_label = self._ch_range_label(self.current_index, end_idx)
             self._show_toast(
-                f"📋 PASTED: {pc} Prompt(s) + {chapters_pasted} chapters ({self.current_index + 1}-{end_idx + 1})",
+                f"📋 PASTED: {pc} Prompt(s) + {ch_label}",
                 "paste",
             )
 
@@ -1698,7 +2219,7 @@ class SmartClipboardOverlay(QWidget):
             return
         self.current_index = 0
         self.paused = False
-        self.pause_btn.setText("|| Pause")
+        self.pause_btn.setText("⏸ Pause")
         if self.mode == self.MODE_PASTE:
             self._load_clipboard_paste_mode()
         else:
@@ -1707,14 +2228,14 @@ class SmartClipboardOverlay(QWidget):
     def _toggle_pause(self):
         self.paused = not self.paused
         if self.paused:
-            self.pause_btn.setText("> Resume")
+            self.pause_btn.setText("▶ Resume")
             self.status_label.setText("[PAUSED]  Press F12 or Resume to continue")
             self.status_label.setStyleSheet(
                 "#status { color: #ffcc00; background: rgba(255,255,255,0.07); "
                 "border-radius: 8px; padding: 6px 10px; font-size: 14px; }"
             )
         else:
-            self.pause_btn.setText("|| Pause")
+            self.pause_btn.setText("⏸ Pause")
             self.status_label.setStyleSheet("")
             if self.mode == self.MODE_PASTE:
                 self._load_clipboard_paste_mode()
@@ -1828,6 +2349,17 @@ class ToastNotification(QWidget):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # Match the look of `python smart_clipboard.py`: prefer native Windows
+    # style; only fall back if the platform style plugin is unavailable.
+    try:
+        from PyQt6.QtWidgets import QStyleFactory
+        _keys = [k.lower() for k in QStyleFactory.keys()]
+        for _preferred in ("windows11", "windowsvista", "windows"):
+            if _preferred in _keys:
+                app.setStyle(_preferred)
+                break
+    except Exception:
+        pass
     app.setApplicationName("INKCOPY")
     app.setApplicationDisplayName("INKCOPY")
     if os.path.isfile(ICON_PATH):
