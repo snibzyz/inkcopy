@@ -2376,7 +2376,7 @@ class ToastNotification(QWidget):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    # Match the look of `python smart_clipboard.py`: prefer native Windows
+    # Match the look of `python inkcopy.py`: prefer native Windows
     # style; only fall back if the platform style plugin is unavailable.
     try:
         from PyQt6.QtWidgets import QStyleFactory

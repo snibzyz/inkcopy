@@ -46,7 +46,7 @@
 
 ```
 inkcopy/
-├── smart_clipboard.py        # ไฟล์หลักที่รวม logic ทั้งหมด
+├── inkcopy.py        # ไฟล์หลักที่รวม logic ทั้งหมด
 ├── INKCOPY.spec              # PyInstaller spec (สำหรับ build .exe)
 ├── requirements.txt          # รายการ Python packages
 ├── README.md                 # ไฟล์นี้
@@ -156,7 +156,7 @@ def _save_config():
 
 ```bash
 pip install -r requirements.txt
-python3 smart_clipboard.py
+python3 inkcopy.py
 ```
 
 (ฮอตคีย์ `keyboard` อาจต้องรันด้วยสิทธิ์ที่เหมาะสมตามระบบ)
@@ -167,7 +167,7 @@ python3 smart_clipboard.py
 
 ### ปล่อย Release ใหม่ (สำหรับ maintainer)
 
-1. แก้ `__version__` ใน `smart_clipboard.py`
+1. แก้ `__version__` ใน `inkcopy.py`
 2. `git commit -am "Release v0.X.0" && git push`
 3. `git tag v0.X.0 && git push --tags`
 4. GitHub Actions จะ build และสร้าง Release พร้อม `INKCOPY.exe` ให้อัตโนมัติ

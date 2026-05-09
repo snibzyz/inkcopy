@@ -7,13 +7,13 @@ echo Starting INKCOPY...
 
 where python >nul 2>nul
 if not errorlevel 1 (
-  python "%ROOT%\smart_clipboard.py"
+  python "%ROOT%\inkcopy.py"
   goto :after
 )
 
 py -3 --version >nul 2>nul
 if not errorlevel 1 (
-  py -3 "%ROOT%\smart_clipboard.py"
+  py -3 "%ROOT%\inkcopy.py"
   goto :after
 )
 

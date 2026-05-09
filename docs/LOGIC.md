@@ -2,7 +2,7 @@
 
 เอกสารนี้อธิบาย logic การทำงานของโปรแกรม Smart Clipboard ในระดับละเอียดสำหรับผู้ที่ต้องการแกะโค้ดหรือพัฒนาต่อ
 
-**Repo:** [snibzyz/smartc](https://github.com/snibzyz/smartc) — การตั้งค่าเก็บที่ `config.json` ข้าง `smart_clipboard.py` (ดู `config.example.json` ใน repo; ไฟล์จริงไม่ commit)
+**Repo:** [snibzyz/smartc](https://github.com/snibzyz/smartc) — การตั้งค่าเก็บที่ `config.json` ข้าง `inkcopy.py` (ดู `config.example.json` ใน repo; ไฟล์จริงไม่ commit)
 
 ## 1. สถาปัตยกรรมโดยรวม
 

@@ -6,7 +6,7 @@
 block_cipher = None
 
 a = Analysis(
-    ['smart_clipboard.py'],
+    ['inkcopy.py'],
     pathex=[],
     binaries=[],
     datas=[('assets/inkcopy.ico', '.')],
