@@ -418,6 +418,7 @@ class SmartClipboardOverlay(QWidget):
     MODE_PASTE = "paste"
     MODE_COPY = "copy"
     MODE_VOCAB = "vocab"
+    PROMPT_ROWS_BEFORE_SCROLL = 4
     _paste_hotkey_event_type: QEvent.Type | None = None
 
     @classmethod
@@ -636,7 +637,8 @@ class SmartClipboardOverlay(QWidget):
         self.prompt_list_scroll.setObjectName("promptListScroll")
         self.prompt_list_scroll.setWidgetResizable(True)
         self.prompt_list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.prompt_list_scroll.setMaximumHeight(200)
+        # Height is sized dynamically in _resize_prompt_scroll_area():
+        # ≤ PROMPT_ROWS_BEFORE_SCROLL → fits exactly, beyond → scroll.
         self.prompt_files_inner = QWidget()
         self.prompt_files_inner.setObjectName("promptFilesInner")
         self.prompt_rows_layout = QVBoxLayout()
@@ -1698,6 +1700,31 @@ class SmartClipboardOverlay(QWidget):
             row_h.addWidget(remove_btn, 0)
             self.prompt_rows_layout.addWidget(row)
         self.prompt_rows_layout.addStretch()
+        self._resize_prompt_scroll_area()
+
+    def _resize_prompt_scroll_area(self):
+        """Size the prompt list to fit all rows up to PROMPT_ROWS_BEFORE_SCROLL,
+        then scroll for any extras."""
+        n = len(self.prompt_files)
+        if n == 0:
+            self.prompt_list_scroll.setFixedHeight(0)
+            return
+        self.prompt_files_inner.adjustSize()
+        layout_margins = 12  # 6 top + 6 bottom from setContentsMargins
+        row_spacing = 6      # from setSpacing
+        rows_to_show = min(n, self.PROMPT_ROWS_BEFORE_SCROLL)
+        # Measure the actual heights of the first rows_to_show rows.
+        row_heights: list[int] = []
+        for i in range(rows_to_show):
+            item = self.prompt_rows_layout.itemAt(i)
+            w = item.widget() if item else None
+            if w is not None:
+                row_heights.append(max(w.sizeHint().height(), 28))
+        if not row_heights:
+            self.prompt_list_scroll.setFixedHeight(0)
+            return
+        total = sum(row_heights) + row_spacing * (len(row_heights) - 1) + layout_margins
+        self.prompt_list_scroll.setFixedHeight(total + 4)  # small fudge for borders
 
     @staticmethod
     def _read_local_file_as_text(path: str, label: str) -> str:
