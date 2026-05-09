@@ -9,7 +9,7 @@ a = Analysis(
     ['smart_clipboard.py'],
     pathex=[],
     binaries=[],
-    datas=[('inkcopy.ico', '.')],
+    datas=[('assets/inkcopy.ico', '.')],
     hiddenimports=[
         'keyboard',
         'natsort',
@@ -59,5 +59,5 @@ exe = EXE(
     entitlements_file=None,
     uac_admin=False,              # do NOT request admin
     uac_uiaccess=False,
-    icon='inkcopy.ico',
+    icon='assets/inkcopy.ico',
 )

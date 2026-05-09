@@ -1,8 +1,15 @@
-# Smart Clipboard (SmartC)
+# INKCOPY
 
 โปรแกรมคลิปบอร์ดอัจฉริยะสำหรับนักเขียน สร้างขึ้นมาเพื่อช่วยในการจัดการไฟล์ Prompt และ Chapter ในการเขียนนิยาย/เนื้อหาแบบอัตโนมัติ
 
-**Repository:** [https://github.com/snibzyz/smartc](https://github.com/snibzyz/smartc)
+**Repository:** [https://github.com/snibzyz/inkcopy](https://github.com/snibzyz/inkcopy)
+
+## ดาวน์โหลด (พร้อมใช้)
+
+โหลด `INKCOPY.exe` ตัวล่าสุดได้จากหน้า [Releases](https://github.com/snibzyz/inkcopy/releases/latest) — ไฟล์เดียว portable, ไม่ต้องลง Python, ดับเบิลคลิกใช้ได้เลย
+
+- **Config** เซฟอัตโนมัติที่ `%APPDATA%\INKCOPY\config.json` (ไม่ปนกับ .exe)
+- **Auto-update** เปิดแอปแล้วถ้ามีเวอร์ชันใหม่บน GitHub Releases ปุ่ม `⬆ vX.X.X` สีเขียวจะโผล่มุมบน คลิกเปิดหน้าโหลด
 
 ## ฟีเจอร์หลัก
 
@@ -38,16 +45,26 @@
 ### ไฟล์หลัก
 
 ```
-SmartC/
-├── smart_clipboard.py   # ไฟล์หลักที่รวม logic ทั้งหมด
-├── config.json          # การตั้งค่า (สร้างเอง — ไม่ commit; ดู config.example.json)
-├── config.example.json  # ตัวอย่างการตั้งค่าเปล่า สำหรับ clone ใหม่
-├── requirements.txt     # รายการ package
-├── install.bat          # ครั้งแรก: pip install -r requirements.txt
-├── run.bat              # รันโปรแกรม
-├── LOGIC.md             # เอกสาร logic ละเอียด
-└── README.md            # ไฟล์นี้
+inkcopy/
+├── smart_clipboard.py        # ไฟล์หลักที่รวม logic ทั้งหมด
+├── INKCOPY.spec              # PyInstaller spec (สำหรับ build .exe)
+├── requirements.txt          # รายการ Python packages
+├── README.md                 # ไฟล์นี้
+├── assets/
+│   ├── inkcopy.png           # โลโก้ต้นฉบับ (512x512)
+│   └── inkcopy.ico           # icon ที่ฝังลงใน .exe + ใช้ใน Qt window
+├── docs/
+│   ├── LOGIC.md              # เอกสาร logic ละเอียด
+│   └── config.example.json   # ตัวอย่างการตั้งค่าเปล่า
+├── scripts/
+│   ├── install.bat           # ครั้งแรก: pip install -r requirements.txt
+│   ├── run.bat               # รันโปรแกรมจาก source
+│   └── build.bat             # build INKCOPY.exe ด้วย PyInstaller
+└── .github/workflows/
+    └── release.yml           # CI: tag push -> build & publish Release อัตโนมัติ
 ```
+
+Config จริงของผู้ใช้ (`config.json`) ไม่อยู่ใน repo — เซฟไปที่ `%APPDATA%\INKCOPY\config.json` (Windows) / `~/.config/INKCOPY/config.json` (Linux) / `~/Library/Application Support/INKCOPY/config.json` (macOS)
 
 ### สถาปัตยกรรมโค้ด
 
@@ -123,15 +140,19 @@ def _save_config():
 
 ## การติดตั้งและรัน
 
-### Windows
+### ทางง่าย: โหลด .exe มาใช้
+
+โหลด `INKCOPY.exe` จาก [Releases](https://github.com/snibzyz/inkcopy/releases/latest) → ดับเบิลคลิก ใช้งานได้ทันที (ไม่ต้องลง Python)
+
+### ทาง dev: รันจาก source
+
+**Windows:**
 
 1. ติดตั้ง [Python 3](https://www.python.org/downloads/) แล้วเปิดตัวเลือกให้ Python อยู่ใน PATH
-2. ดับเบิลคลิก **`install.bat`** ครั้งแรก (หรือเมื่อเปลี่ยนเครื่อง) — รัน `pip install -r requirements.txt` ธรรมดา ไม่มี venv
-3. ดับเบิลคลิก **`run.bat`** เพื่อเปิดโปรแกรม
+2. ดับเบิลคลิก **`scripts\install.bat`** ครั้งแรก — รัน `pip install -r requirements.txt`
+3. ดับเบิลคลิก **`scripts\run.bat`** เพื่อเปิดโปรแกรม
 
-**การตั้งค่า:** คัดลอก `config.example.json` เป็น `config.json` ได้ถ้าต้องการ — หรือตั้งค่าใน UI; `config.json` ไม่ถูก commit ขึ้น git
-
-### Linux / macOS
+**Linux / macOS:**
 
 ```bash
 pip install -r requirements.txt
@@ -139,6 +160,18 @@ python3 smart_clipboard.py
 ```
 
 (ฮอตคีย์ `keyboard` อาจต้องรันด้วยสิทธิ์ที่เหมาะสมตามระบบ)
+
+### Build .exe เอง
+
+ดับเบิลคลิก **`scripts\build.bat`** — ผลลัพธ์อยู่ที่ `dist\INKCOPY.exe`
+
+### ปล่อย Release ใหม่ (สำหรับ maintainer)
+
+1. แก้ `__version__` ใน `smart_clipboard.py`
+2. `git commit -am "Release v0.X.0" && git push`
+3. `git tag v0.X.0 && git push --tags`
+4. GitHub Actions จะ build และสร้าง Release พร้อม `INKCOPY.exe` ให้อัตโนมัติ
+5. ผู้ใช้เวอร์ชันเก่าจะเห็นปุ่ม `⬆ vX.X.X` ในแอปเอง
 
 ## การตั้งค่าเริ่มต้น
 

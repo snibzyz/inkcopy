@@ -1,6 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
-cd /d "%~dp0"
+set "ROOT=%~dp0.."
+cd /d "%ROOT%"
 
 echo ============================================================
 echo  Building INKCOPY.exe (portable, onefile)
@@ -55,7 +56,7 @@ echo  Build OK
 echo ============================================================
 echo  Output : %CD%\dist\INKCOPY.exe
 echo  Usage  : copy INKCOPY.exe to any folder and run it.
-echo           config.json will be created next to the .exe.
+echo           config saved to %%APPDATA%%\INKCOPY\config.json.
 echo ============================================================
 echo.
 pause
