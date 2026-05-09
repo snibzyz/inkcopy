@@ -1,0 +1,3 @@
+keyboard
+natsort
+PyQt6

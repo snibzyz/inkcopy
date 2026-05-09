@@ -1,0 +1,23 @@
+# Portable / local
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# PyInstaller build output
+build/
+dist/
+
+# User settings (paths are machine-specific); copy from config.example.json
+config.json
+
+# Local Explorer shortcuts at repo root (not part of the app)
+*Shortcut*.lnk
+
+# Editor / OS
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
