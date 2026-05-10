@@ -6,9 +6,14 @@
 
 ## ดาวน์โหลด (พร้อมใช้)
 
-โหลด `INKCOPY.exe` ตัวล่าสุดได้จากหน้า [Releases](https://github.com/snibzyz/inkcopy/releases/latest) — ไฟล์เดียว portable, ไม่ต้องลง Python, ดับเบิลคลิกใช้ได้เลย
+โหลดตัวล่าสุดจากหน้า [Releases](https://github.com/snibzyz/inkcopy/releases/latest):
 
-- **Config** เซฟอัตโนมัติที่ `%APPDATA%\INKCOPY\config.json` (ไม่ปนกับ .exe)
+- **Windows:** `INKCOPY.exe` — portable, ไม่ต้องลง Python, ดับเบิลคลิกใช้ได้เลย
+- **macOS:** `INKCOPY.dmg` — ดับเบิลคลิกแล้วลาก `INKCOPY.app` ไปที่ Applications
+
+**สำหรับ macOS** ครั้งแรกที่เปิด ระบบจะถามสิทธิ์ Accessibility — เปิดที่ `System Settings → Privacy & Security → Accessibility` แล้วเปิดสวิตช์ของ INKCOPY (จำเป็นสำหรับการดักจับ Cmd+V และ F9/F10/F12)
+
+- **Config** เซฟอัตโนมัติที่ `%APPDATA%\INKCOPY\config.json` (Windows) / `~/Library/Application Support/INKCOPY/config.json` (macOS)
 - **Auto-update** เปิดแอปแล้วถ้ามีเวอร์ชันใหม่บน GitHub Releases ปุ่ม `⬆ vX.X.X` สีเขียวจะโผล่มุมบน คลิกเปิดหน้าโหลด
 
 ## ฟีเจอร์หลัก
@@ -35,10 +40,10 @@
 ### ฮอตคีย์
 
 - **F9**: ไปยังไฟล์ก่อนหน้า
-- **F10**: ไปยังไฟล์ถัดไป  
+- **F10**: ไปยังไฟล์ถัดไป
 - **F12**: หยุด/ทำงานต่อ (Pause/Resume)
-- **Ctrl+V**: Paste Mode - วางข้อความแล้วไปต่อ
-- **Ctrl+C**: Copy Mode - บันทึกข้อความแล้วไปต่อ
+- **Ctrl+V** (Windows) / **Cmd+V** (macOS): Paste Mode — วางข้อความแล้วไปต่อ
+- **Ctrl+C** (Windows) / **Cmd+C** (macOS): Copy Mode — บันทึกข้อความแล้วไปต่อ
 
 ## โครงสร้างโปรแกรม
 
@@ -57,23 +62,30 @@ inkcopy/
 │   ├── LOGIC.md              # เอกสาร logic ละเอียด
 │   └── config.example.json   # ตัวอย่างการตั้งค่าเปล่า
 ├── scripts/
-│   ├── install.bat           # ครั้งแรก: pip install -r requirements.txt
-│   ├── run.bat               # รันโปรแกรมจาก source
-│   └── build.bat             # build INKCOPY.exe ด้วย PyInstaller
+│   ├── install.bat           # Windows: pip install -r requirements.txt
+│   ├── run.bat               # Windows: รันโปรแกรมจาก source
+│   ├── build.bat             # Windows: build INKCOPY.exe
+│   ├── install.sh            # macOS/Linux: pip install -r requirements.txt
+│   ├── run.sh                # macOS/Linux: รันโปรแกรมจาก source
+│   ├── build.sh              # macOS: build INKCOPY.app
+│   └── build_icns.sh         # macOS: สร้าง .icns จาก inkcopy.png
 └── .github/workflows/
-    └── release.yml           # CI: tag push -> build & publish Release อัตโนมัติ
+    └── release.yml           # CI: tag push -> build .exe + .dmg แล้ว publish Release อัตโนมัติ
 ```
 
 Config จริงของผู้ใช้ (`config.json`) ไม่อยู่ใน repo — เซฟไปที่ `%APPDATA%\INKCOPY\config.json` (Windows) / `~/.config/INKCOPY/config.json` (Linux) / `~/Library/Application Support/INKCOPY/config.json` (macOS)
 
 ### สถาปัตยกรรมโค้ด
 
-โปรแกรมใช้ PyQt6 สำหรับ UI และ keyboard library สำหรับฮอตคีย์:
+โปรแกรมใช้ PyQt6 สำหรับ UI และ hotkey backend แยกตาม OS — `keyboard` บน Windows, `pynput` บน macOS/Linux:
 
 ```python
 # ส่วนประกอบหลัก
 - SmartClipboardOverlay (หน้าต่างหลัก)
 - HotkeySignals (ส่งสัญญาณระหว่าง thread)
+- _HotkeyBackend (abstraction: register/unregister/send_paste/is_paste_modifier_held)
+    - _KeyboardLibBackend  (Windows: keyboard library)
+    - _PynputBackend       (macOS/Linux: pynput)
 - Config helpers (จัดการการตั้งค่า)
 - Shortcut resolution (จัดการ .lnk บน Windows)
 ```
@@ -140,9 +152,10 @@ def _save_config():
 
 ## การติดตั้งและรัน
 
-### ทางง่าย: โหลด .exe มาใช้
+### ทางง่าย: โหลดไฟล์สำเร็จ
 
-โหลด `INKCOPY.exe` จาก [Releases](https://github.com/snibzyz/inkcopy/releases/latest) → ดับเบิลคลิก ใช้งานได้ทันที (ไม่ต้องลง Python)
+- **Windows:** โหลด `INKCOPY.exe` จาก [Releases](https://github.com/snibzyz/inkcopy/releases/latest) → ดับเบิลคลิก
+- **macOS:** โหลด `INKCOPY.dmg` → ลาก `INKCOPY.app` ไป `/Applications` → เปิดครั้งแรก กด "Open Anyway" ใน System Settings → Privacy & Security → ให้สิทธิ์ Accessibility
 
 ### ทาง dev: รันจาก source
 
@@ -152,25 +165,24 @@ def _save_config():
 2. ดับเบิลคลิก **`scripts\install.bat`** ครั้งแรก — รัน `pip install -r requirements.txt`
 3. ดับเบิลคลิก **`scripts\run.bat`** เพื่อเปิดโปรแกรม
 
-**Linux / macOS:**
+**macOS / Linux:**
 
-```bash
-pip install -r requirements.txt
-python3 inkcopy.py
-```
+1. ติดตั้ง Python 3 (`brew install python` บน macOS หรือ [python.org](https://www.python.org/downloads/))
+2. รัน `bash scripts/install.sh` — รัน `pip install -r requirements.txt`
+3. รัน `bash scripts/run.sh` เพื่อเปิดโปรแกรม
+4. (macOS) เปิด `System Settings → Privacy & Security → Accessibility` แล้วเปิดสิทธิ์ให้ Terminal/iTerm/Python — จำเป็นเพื่อจับฮอตคีย์ทั่วระบบ
 
-(ฮอตคีย์ `keyboard` อาจต้องรันด้วยสิทธิ์ที่เหมาะสมตามระบบ)
+### Build เอง
 
-### Build .exe เอง
-
-ดับเบิลคลิก **`scripts\build.bat`** — ผลลัพธ์อยู่ที่ `dist\INKCOPY.exe`
+- **Windows:** ดับเบิลคลิก **`scripts\build.bat`** → ได้ `dist\INKCOPY.exe`
+- **macOS:** รัน `bash scripts/build.sh` → ได้ `dist/INKCOPY.app`
 
 ### ปล่อย Release ใหม่ (สำหรับ maintainer)
 
 1. แก้ `__version__` ใน `inkcopy.py`
 2. `git commit -am "Release v0.X.0" && git push`
 3. `git tag v0.X.0 && git push --tags`
-4. GitHub Actions จะ build และสร้าง Release พร้อม `INKCOPY.exe` ให้อัตโนมัติ
+4. GitHub Actions จะ build ทั้ง Windows + macOS แล้วสร้าง Release พร้อม `INKCOPY.exe` + `INKCOPY.dmg` อัตโนมัติ
 5. ผู้ใช้เวอร์ชันเก่าจะเห็นปุ่ม `⬆ vX.X.X` ในแอปเอง
 
 ## การตั้งค่าเริ่มต้น
@@ -183,12 +195,15 @@ python3 inkcopy.py
 
 ### การเปลี่ยนฮอตคีย์
 
-แก้ไขใน `_register_hotkeys()`:
+แก้ไขใน `_register_hotkeys()` หรือใน `_HotkeyBackend` impl ของแต่ละ OS:
 
 ```python
-keyboard.add_hotkey("f9", lambda: self.signals.prev_chapter.emit())
-keyboard.add_hotkey("f10", lambda: self.signals.next_chapter.emit())
-keyboard.add_hotkey("f12", lambda: self.signals.toggle_pause.emit())
+_hotkey_backend.register(
+    on_paste=self._kb_paste_handler,
+    on_prev=lambda: self.signals.prev_chapter.emit(),     # F9
+    on_next=lambda: self.signals.next_chapter.emit(),     # F10
+    on_pause=lambda: self.signals.toggle_pause.emit(),    # F12
+)
 ```
 
 ### การปรับ UI Style
@@ -206,8 +221,9 @@ keyboard.add_hotkey("f12", lambda: self.signals.toggle_pause.emit())
 ### ปัญหาที่พบบ่อย
 
 **ฮอตคีย์ไม่ทำงาน**
-- ตรวจสอบว่าติดตั้ง keyboard library แล้ว
-- บางโปรแกรมอาจ block ฮอตคีย์ (พยายามรันเป็น admin)
+- Windows: ตรวจสอบว่าติดตั้ง `keyboard` แล้ว, บางโปรแกรมอาจ block ฮอตคีย์ (ลองรันเป็น admin)
+- macOS: ต้องให้สิทธิ์ Accessibility — `System Settings → Privacy & Security → Accessibility` แล้วเปิดสวิตช์ของ INKCOPY (หรือ Terminal ถ้ารันจาก source). ถ้าเพิ่งให้สิทธิ์ ต้องปิด-เปิดแอปใหม่
+- Linux: ต้องติดตั้ง `pynput` และอาจต้องสิทธิ์ X11/Wayland เพิ่มเติม
 
 **คลิปบอร์ดไม่ตอบสนอง**
 - บน Windows อาจต้องระยะเวลาสักครู่ให้คลิปบอร์ดอัปเดต

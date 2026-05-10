@@ -4,28 +4,40 @@ import os
 # Check for required modules before importing
 def check_modules():
     missing = []
+    # Hotkey backend differs per platform: `keyboard` on Windows, `pynput` elsewhere.
+    if sys.platform == "win32":
+        try:
+            import keyboard  # noqa: F401
+        except ImportError:
+            missing.append("keyboard")
+    else:
+        try:
+            import pynput  # noqa: F401
+        except ImportError:
+            missing.append("pynput")
     try:
-        import keyboard
-    except ImportError:
-        missing.append("keyboard")
-    try:
-        import natsort
+        import natsort  # noqa: F401
     except ImportError:
         missing.append("natsort")
     try:
-        from PyQt6.QtCore import Qt, QUrl, QMimeData, QTimer, pyqtSignal, QObject
+        from PyQt6.QtCore import Qt, QUrl, QMimeData, QTimer, pyqtSignal, QObject  # noqa: F401
     except ImportError:
         missing.append("PyQt6")
-    
+
     if missing:
+        sep = "\\" if sys.platform == "win32" else "/"
+        req_path = os.path.dirname(os.path.abspath(__file__)) + sep + "requirements.txt"
         print("=" * 60)
         print("ERROR: Missing required Python modules!")
         print("=" * 60)
         print(f"\nMissing: {', '.join(missing)}")
         print("\nTo fix, run this command in terminal:")
-        print(f"   pip install -r {os.path.dirname(os.path.abspath(__file__))}\\requirements.txt")
+        print(f"   pip install -r {req_path}")
         print("\nOr install manually:")
-        print("   pip install keyboard natsort PyQt6")
+        if sys.platform == "win32":
+            print("   pip install keyboard natsort PyQt6")
+        else:
+            print("   pip install pynput natsort PyQt6")
         print("\nPress Enter to exit...")
         input()
         sys.exit(1)
@@ -37,7 +49,6 @@ import re
 import unicodedata
 from pathlib import Path
 
-import keyboard
 import natsort
 from PyQt6.QtCore import Qt, QUrl, QMimeData, QTimer, pyqtSignal, QObject, QEvent
 from PyQt6.QtGui import QColor, QIcon
@@ -49,7 +60,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
@@ -397,6 +408,165 @@ else:
 
     def _win32_sendinput_ctrl_v() -> bool:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform hotkey backend
+#   Windows: `keyboard` library (low-latency Win32 hooks; existing behavior).
+#   macOS / Linux: `pynput` (works with Quartz on macOS — needs Accessibility).
+# Backend exposes: register / unregister / send_paste / is_paste_modifier_held.
+# Modifier is Ctrl on Windows/Linux, Cmd on macOS.
+# ---------------------------------------------------------------------------
+PASTE_MODIFIER_NAME = "Cmd" if sys.platform == "darwin" else "Ctrl"
+
+
+class _HotkeyBackend:
+    def register(self, on_paste, on_prev, on_next, on_pause): ...
+    def unregister(self): ...
+    def send_paste(self) -> bool: ...
+    def is_paste_modifier_held(self) -> bool: ...
+
+
+if sys.platform == "win32":
+    import keyboard as _kb_lib
+
+    class _KeyboardLibBackend(_HotkeyBackend):
+        def __init__(self):
+            self._registered = False
+            self._on_paste = None
+
+        def register(self, on_paste, on_prev, on_next, on_pause):
+            if self._registered:
+                return
+            self._registered = True
+            self._on_paste = on_paste
+            _kb_lib.on_press_key("v", self._handle_v, suppress=False)
+            _kb_lib.add_hotkey("f9", on_prev)
+            _kb_lib.add_hotkey("f10", on_next)
+            _kb_lib.add_hotkey("f12", on_pause)
+
+        def _handle_v(self, _event):
+            if self._on_paste is not None and self.is_paste_modifier_held():
+                self._on_paste()
+
+        def unregister(self):
+            try:
+                _kb_lib.unhook_all()
+            except Exception:
+                pass
+            self._registered = False
+
+        def send_paste(self) -> bool:
+            try:
+                _kb_lib.send("ctrl+v")
+                return True
+            except Exception:
+                return False
+
+        def is_paste_modifier_held(self) -> bool:
+            try:
+                return _kb_lib.is_pressed("ctrl")
+            except Exception:
+                return False
+
+    _hotkey_backend: _HotkeyBackend = _KeyboardLibBackend()
+
+else:
+    from pynput import keyboard as _pynkb
+
+    class _PynputBackend(_HotkeyBackend):
+        # macOS V keycode is 9, Windows VK_V is 0x56. Use both char and vk for safety:
+        # when Cmd/Ctrl is held, pynput sometimes returns a KeyCode without a populated char.
+        _V_VKS = {9, 0x56, 47}  # 47 covers some Linux X11 layouts
+
+        def __init__(self):
+            self._listener = None
+            self._mods: set[str] = set()
+            self._controller = _pynkb.Controller()
+            self._on_paste = None
+            self._on_prev = None
+            self._on_next = None
+            self._on_pause = None
+
+        def register(self, on_paste, on_prev, on_next, on_pause):
+            if self._listener is not None:
+                return
+            self._on_paste = on_paste
+            self._on_prev = on_prev
+            self._on_next = on_next
+            self._on_pause = on_pause
+            self._listener = _pynkb.Listener(
+                on_press=self._on_key_press,
+                on_release=self._on_key_release,
+            )
+            self._listener.daemon = True
+            self._listener.start()
+
+        def unregister(self):
+            if self._listener is not None:
+                try:
+                    self._listener.stop()
+                except Exception:
+                    pass
+                self._listener = None
+            self._mods.clear()
+
+        def _mod_name(self, key) -> str | None:
+            if key in (_pynkb.Key.cmd, _pynkb.Key.cmd_l, _pynkb.Key.cmd_r):
+                return "cmd"
+            if key in (_pynkb.Key.ctrl, _pynkb.Key.ctrl_l, _pynkb.Key.ctrl_r):
+                return "ctrl"
+            return None
+
+        def _is_v_key(self, key) -> bool:
+            ch = getattr(key, "char", None)
+            if ch and ch.lower() == "v":
+                return True
+            vk = getattr(key, "vk", None)
+            if vk is not None and vk in self._V_VKS:
+                return True
+            return False
+
+        def _on_key_press(self, key):
+            try:
+                mod = self._mod_name(key)
+                if mod is not None:
+                    self._mods.add(mod)
+                    return
+                if key == _pynkb.Key.f9 and self._on_prev:
+                    self._on_prev()
+                    return
+                if key == _pynkb.Key.f10 and self._on_next:
+                    self._on_next()
+                    return
+                if key == _pynkb.Key.f12 and self._on_pause:
+                    self._on_pause()
+                    return
+                if self._is_v_key(key) and self.is_paste_modifier_held() and self._on_paste:
+                    self._on_paste()
+            except Exception:
+                pass
+
+        def _on_key_release(self, key):
+            mod = self._mod_name(key)
+            if mod is not None:
+                self._mods.discard(mod)
+
+        def is_paste_modifier_held(self) -> bool:
+            target = "cmd" if sys.platform == "darwin" else "ctrl"
+            return target in self._mods
+
+        def send_paste(self) -> bool:
+            mod = _pynkb.Key.cmd if sys.platform == "darwin" else _pynkb.Key.ctrl
+            try:
+                with self._controller.pressed(mod):
+                    self._controller.press("v")
+                    self._controller.release("v")
+                return True
+            except Exception:
+                return False
+
+    _hotkey_backend: _HotkeyBackend = _PynputBackend()
 
 
 # ---------------------------------------------------------------------------
@@ -1835,16 +2005,19 @@ class SmartClipboardOverlay(QWidget):
             return
         self.hotkeys_registered = True
 
-        keyboard.on_press_key("v", self._kb_paste_handler, suppress=False)
-        keyboard.add_hotkey("f9", lambda: self.signals.prev_chapter.emit())
-        keyboard.add_hotkey("f10", lambda: self.signals.next_chapter.emit())
-        keyboard.add_hotkey("f12", lambda: self.signals.toggle_pause.emit())
+        _hotkey_backend.register(
+            on_paste=self._kb_paste_handler,
+            on_prev=lambda: self.signals.prev_chapter.emit(),
+            on_next=lambda: self.signals.next_chapter.emit(),
+            on_pause=lambda: self.signals.toggle_pause.emit(),
+        )
 
-    def _kb_paste_handler(self, event):
+    def _kb_paste_handler(self):
+        # Backend already verified the paste modifier (Ctrl on Win/Linux, Cmd on macOS).
         if self._suppress_paste_hotkey:
             return
-        if self.mode == self.MODE_PASTE and keyboard.is_pressed("ctrl") and not self.paused:
-            # จาก thread ของ keyboard — ส่ง event เข้า Qt main thread (threading.Timer+emit เดิมทำให้ขั้นต่อไม่ทำงาน)
+        if self.mode == self.MODE_PASTE and not self.paused:
+            # ส่ง event เข้า Qt main thread จาก hotkey listener thread
             QApplication.postEvent(self, QEvent(self._get_paste_hotkey_event_type()))
 
     # ============================================================ CLIPBOARD MONITOR (Copy Mode)
@@ -2140,7 +2313,7 @@ class SmartClipboardOverlay(QWidget):
         user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
     def _staged_send_synthetic_ctrl_v(self, after_delay=None):
-        """ส่ง Ctrl+V สังเคราะห์; หลังดีเลย์เรียก after_delay หรือจบรอบ (_staged_clear_suppress_and_advance)."""
+        """ส่ง Ctrl+V (หรือ Cmd+V บน macOS) สังเคราะห์; หลังดีเลย์เรียก after_delay หรือจบรอบ."""
         self._suppress_paste_hotkey = True
         if sys.platform == "win32":
             if not _win32_sendinput_ctrl_v():
@@ -2148,15 +2321,9 @@ class SmartClipboardOverlay(QWidget):
                     self._inject_ctrl_v_windows()
                 except Exception:
                     pass
-                try:
-                    keyboard.send("ctrl+v")
-                except Exception:
-                    pass
+                _hotkey_backend.send_paste()
         else:
-            try:
-                keyboard.send("ctrl+v")
-            except Exception:
-                pass
+            _hotkey_backend.send_paste()
         ms = max(50, min(self.staged_ms_after_text_paste, 8000))
         done = after_delay if after_delay is not None else self._staged_clear_suppress_and_advance
         QTimer.singleShot(ms, done)
@@ -2290,7 +2457,7 @@ class SmartClipboardOverlay(QWidget):
 
     # ============================================================ QUIT
     def _quit(self):
-        keyboard.unhook_all()
+        _hotkey_backend.unregister()
         QApplication.quit()
 
 
