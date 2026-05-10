@@ -1,5 +1,9 @@
 # INKCOPY
 
+<p align="center">
+  <img src="assets/inkcopy.png" alt="INKCOPY" width="180" />
+</p>
+
 โปรแกรมคลิปบอร์ดอัจฉริยะสำหรับนักเขียน สร้างขึ้นมาเพื่อช่วยในการจัดการไฟล์ Prompt และ Chapter ในการเขียนนิยาย/เนื้อหาแบบอัตโนมัติ
 
 **Repository:** [https://github.com/snibzyz/inkcopy](https://github.com/snibzyz/inkcopy)
