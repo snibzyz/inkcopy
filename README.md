@@ -1,246 +1,292 @@
 # INKCOPY
 
-<p align="center">
-  <img src="assets/inkcopy.png" alt="INKCOPY" width="180" />
-</p>
+โปรแกรมคลิปบอร์ดอัจฉริยะสำหรับนักเขียน/นักแปล — ช่วยทำงานซ้ำ ๆ ระหว่าง "พรอมต์ + ตอน" กับ ChatGPT/AI ให้กลายเป็นกดปุ่มเดียวจบ
 
-โปรแกรมคลิปบอร์ดอัจฉริยะสำหรับนักเขียน สร้างขึ้นมาเพื่อช่วยในการจัดการไฟล์ Prompt และ Chapter ในการเขียนนิยาย/เนื้อหาแบบอัตโนมัติ
+วางพรอมต์ + ตอนนิยายในโฟลเดอร์ → กดปุ่ม → โปรแกรมจะวางให้อัตโนมัติ → กด Ctrl+V ทีเดียวไปตอนถัดไป
 
-**Repository:** [https://github.com/snibzyz/inkcopy](https://github.com/snibzyz/inkcopy)
+---
 
-## ดาวน์โหลด (พร้อมใช้)
+## สารบัญ
 
-โหลดตัวล่าสุดจากหน้า [Releases](https://github.com/snibzyz/inkcopy/releases/latest):
+1. [เริ่มต้นใช้งาน](#เริ่มต้นใช้งาน)
+2. [3 โหมดหลัก — ใช้ทำอะไร](#3-โหมดหลัก--ใช้ทำอะไร)
+3. [โฟลเดอร์ต่าง ๆ — วางไฟล์อะไรที่ไหน](#โฟลเดอร์ต่าง-ๆ--วางไฟล์อะไรที่ไหน)
+4. [ขั้นตอนภาพรวม](#ขั้นตอนภาพรวม)
+5. [โหมด 1 — Paste Mode (วาง)](#โหมด-1--paste-mode-วาง)
+6. [โหมด 2 — Copy Mode (คัดลอก)](#โหมด-2--copy-mode-คัดลอก)
+7. [โหมด 3 — Vocab Mode (คำศัพท์)](#โหมด-3--vocab-mode-คำศัพท์)
+8. [ปุ่มลัด (Hotkey)](#ปุ่มลัด-hotkey)
+9. [การตั้งค่าต่าง ๆ บนหน้าจอ](#การตั้งค่าต่าง-ๆ-บนหน้าจอ)
+10. [แก้ปัญหาที่พบบ่อย](#แก้ปัญหาที่พบบ่อย)
 
-- **Windows:** `INKCOPY.exe` — portable, ไม่ต้องลง Python, ดับเบิลคลิกใช้ได้เลย
-- **macOS:** `INKCOPY.dmg` — ดับเบิลคลิกแล้วลาก `INKCOPY.app` ไปที่ Applications
+---
 
-**สำหรับ macOS** ครั้งแรกที่เปิด ระบบจะถามสิทธิ์ Accessibility — เปิดที่ `System Settings → Privacy & Security → Accessibility` แล้วเปิดสวิตช์ของ INKCOPY (จำเป็นสำหรับการดักจับ Cmd+V และ F9/F10/F12)
+## เริ่มต้นใช้งาน
 
-- **Config** เซฟอัตโนมัติที่ `%APPDATA%\INKCOPY\config.json` (Windows) / `~/Library/Application Support/INKCOPY/config.json` (macOS)
-- **Auto-update** เปิดแอปแล้วถ้ามีเวอร์ชันใหม่บน GitHub Releases ปุ่ม `⬆ vX.X.X` สีเขียวจะโผล่มุมบน คลิกเปิดหน้าโหลด
+### บนเครื่อง Windows
 
-## ฟีเจอร์หลัก
+1. ดาวน์โหลด **`INKCOPY.exe`** จาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
+2. วางที่ไหนก็ได้ในเครื่อง (ไม่ต้องติดตั้ง — เป็นไฟล์เดียวจบ)
+3. ดับเบิลคลิกเปิด
+4. ถ้ามีแถบเตือนของ Windows → กด **More info** → **Run anyway**
 
-### 3 โหมดการทำงาน
+### บนเครื่อง Mac
 
-**📋 Paste Mode (โหมดวาง)**
-- อ่านไฟล์ Prompt + Chapter จากโฟลเดอร์
-- รวมเนื้อหาแล้ววางลงคลิปบอร์ด
-- กด `Ctrl+V` เพื่อไปยังไฟล์ถัดไปอัตโนมัติ
-- รองรับการวางหลายไฟล์พร้อมกัน (Concurrent chapters)
+1. ดาวน์โหลด **`INKCOPY.dmg`** จาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
+2. ดับเบิลคลิกเปิด → ลาก **`INKCOPY.app`** ไปยังโฟลเดอร์ Applications
+3. **ครั้งแรก**: คลิกขวาที่ไอคอน → **Open** → กด **Open** อีกครั้ง (ครั้งต่อไปดับเบิลคลิกได้ปกติ)
+4. **สำคัญมาก** — ให้สิทธิ์ Accessibility:
+   - เปิด **System Settings** → **Privacy & Security** → **Accessibility**
+   - กดเครื่องหมาย **+** เพิ่ม INKCOPY แล้วเปิดสวิตช์
+   - ถ้าไม่ให้สิทธิ์นี้ ปุ่มลัด F9/F10/F12 และ Cmd+V จะไม่ทำงาน
 
-**📝 Copy Mode (โหมดคัดลอก)**
-- รอรับข้อความจากคลิปบอร์ด
-- เมื่อคัดลอกข้อความ จะบันทึกลงไฟล์ Chapter ในโฟลเดอร์ Output อัตโนมัติ
-- สามารถเลือกใส่ชื่อไฟล์+บรรทัดว่าง หรือเฉพาะเนื้อหาได้
-- กด `Ctrl+C` แล้วโปรแกรมจะบันทึกและไปยังไฟล์ถัดไป
+> เมื่อมีเวอร์ชันใหม่ ปุ่มสีเขียว **⬆ vX.X.X** จะโผล่ที่มุมขวาบน — กดเพื่อเปิดหน้าโหลด
 
-**📖 Vocab Mode (โหมดคำศัพท์)**
-- รวบรวมคำศัพท์หรือข้อมูลจากคลิปบอร์ด
-- บันทึกลงไฟล์ `vocab.txt` แบบต่อท้าย
-- ใช้สำหรับสะสมคำศัพท์ ข้อมูล หรือ reference
+---
 
-### ฮอตคีย์
+## 3 โหมดหลัก — ใช้ทำอะไร
 
-- **F9**: ไปยังไฟล์ก่อนหน้า
-- **F10**: ไปยังไฟล์ถัดไป
-- **F12**: หยุด/ทำงานต่อ (Pause/Resume)
-- **Ctrl+V** (Windows) / **Cmd+V** (macOS): Paste Mode — วางข้อความแล้วไปต่อ
-- **Ctrl+C** (Windows) / **Cmd+C** (macOS): Copy Mode — บันทึกข้อความแล้วไปต่อ
+INKCOPY มี 3 โหมด สลับกันด้วยปุ่มใหญ่ด้านบน
 
-## โครงสร้างโปรแกรม
+| โหมด | ทำอะไร | เหมาะกับ |
+|---|---|---|
+| **Paste Mode (วาง)** | อ่านไฟล์พรอมต์ + ตอน รวมเข้าด้วยกัน วางลงคลิปบอร์ดให้พร้อมกดวาง | ส่งงานให้ AI ทีละตอน ทำซ้ำหลายร้อยตอน |
+| **Copy Mode (คัดลอก)** | รอรับข้อความที่คัดลอก แล้วบันทึกลงไฟล์ทันที | เก็บคำตอบจาก AI กลับเป็นไฟล์ตอน .txt |
+| **Vocab Mode (คำศัพท์)** | รอรับข้อความ แล้วต่อท้ายลงไฟล์เดียว | สะสมคำศัพท์/อ้างอิงระหว่างทำงาน |
 
-### ไฟล์หลัก
+กดปุ่มโหมดด้านบนเพื่อสลับ (วน Paste → Copy → Vocab → Paste)
 
-```
-inkcopy/
-├── inkcopy.py        # ไฟล์หลักที่รวม logic ทั้งหมด
-├── INKCOPY.spec              # PyInstaller spec (สำหรับ build .exe)
-├── requirements.txt          # รายการ Python packages
-├── README.md                 # ไฟล์นี้
-├── assets/
-│   ├── inkcopy.png           # โลโก้ต้นฉบับ (512x512)
-│   └── inkcopy.ico           # icon ที่ฝังลงใน .exe + ใช้ใน Qt window
-├── docs/
-│   ├── LOGIC.md              # เอกสาร logic ละเอียด
-│   └── config.example.json   # ตัวอย่างการตั้งค่าเปล่า
-├── scripts/
-│   ├── install.bat           # Windows: pip install -r requirements.txt
-│   ├── run.bat               # Windows: รันโปรแกรมจาก source
-│   ├── build.bat             # Windows: build INKCOPY.exe
-│   ├── install.sh            # macOS/Linux: pip install -r requirements.txt
-│   ├── run.sh                # macOS/Linux: รันโปรแกรมจาก source
-│   ├── build.sh              # macOS: build INKCOPY.app
-│   └── build_icns.sh         # macOS: สร้าง .icns จาก inkcopy.png
-└── .github/workflows/
-    └── release.yml           # CI: tag push -> build .exe + .dmg แล้ว publish Release อัตโนมัติ
-```
+---
 
-Config จริงของผู้ใช้ (`config.json`) ไม่อยู่ใน repo — เซฟไปที่ `%APPDATA%\INKCOPY\config.json` (Windows) / `~/.config/INKCOPY/config.json` (Linux) / `~/Library/Application Support/INKCOPY/config.json` (macOS)
+## โฟลเดอร์ต่าง ๆ — วางไฟล์อะไรที่ไหน
 
-### สถาปัตยกรรมโค้ด
+INKCOPY ไม่ได้สร้างโฟลเดอร์ของตัวเอง — **คุณเลือกได้เอง** ว่าจะใช้โฟลเดอร์ไหน
 
-โปรแกรมใช้ PyQt6 สำหรับ UI และ hotkey backend แยกตาม OS — `keyboard` บน Windows, `pynput` บน macOS/Linux:
+### 3 โฟลเดอร์ที่ต้องตั้ง
 
-```python
-# ส่วนประกอบหลัก
-- SmartClipboardOverlay (หน้าต่างหลัก)
-- HotkeySignals (ส่งสัญญาณระหว่าง thread)
-- _HotkeyBackend (abstraction: register/unregister/send_paste/is_paste_modifier_held)
-    - _KeyboardLibBackend  (Windows: keyboard library)
-    - _PynputBackend       (macOS/Linux: pynput)
-- Config helpers (จัดการการตั้งค่า)
-- Shortcut resolution (จัดการ .lnk บน Windows)
-```
+| โฟลเดอร์ | วางไฟล์อะไร | ใช้ในโหมด |
+|---|---|---|
+| **Prompt Folder** | ไฟล์พรอมต์ที่จะส่งให้ AI ก่อนเนื้อหา (เช่น "กรุณาแปลภาษาจีนเป็นไทยให้ลื่นไหล...") | Paste |
+| **Chapter Folder** | ไฟล์เนื้อหาตอนนิยาย แต่ละไฟล์ = 1 ตอน | Paste, Copy |
+| **Output Folder** | โฟลเดอร์ปลายทาง — โปรแกรมจะบันทึกผลลงที่นี่ | Copy, Vocab |
 
-## Logic การทำงาน
+### ชนิดไฟล์ที่อ่านได้
 
-### 1. การเริ่มต้นโปรแกรม
+- `.txt` — ไฟล์ข้อความธรรมดา
+- `.md` — ไฟล์มาร์กดาวน์
+- `.lnk` — ทางลัด Windows (ชี้ไปไฟล์อื่น โปรแกรมจะตามให้อัตโนมัติ)
 
-```python
-# ตรวจสอบ dependencies
-check_modules()
+### ที่เก็บการตั้งค่า (ไม่ต้องแตะ)
 
-# สร้างหน้าต่างหลัก
-overlay = SmartClipboardOverlay()
+- **Windows**: `%APPDATA%\INKCOPY\config.json`
+- **Mac**: `~/Library/Application Support/INKCOPY/config.json`
 
-# โหลด config ครั้งล่าสุด
-overlay._load_saved_config()
+ค่าโฟลเดอร์ + โหมดล่าสุด + ความเร็ว จะถูกจำไว้ — เปิดครั้งหน้าได้เลย
 
-# ลงทะเบียนฮอตคีย์
-overlay._register_hotkeys()
-```
+---
 
-### 2. Paste Mode Logic
+## ขั้นตอนภาพรวม
 
-```
-1. สแกนโฟลเดอร์ Prompt และ Chapter
-2. อ่านไฟล์ตามจำนวน concurrent chapters
-3. รวมเนื้อหา (Prompt + Chapter)
-4. วางลงคลิปบอร์ด
-5. รอ Ctrl+V จากผู้ใช้
-6. เมื่อได้รับสัญญาณ -> ไปยังไฟล์ถัดไป
+ขั้นตอนทำงานทั่วไป จากต้นจนจบ
+
+```mermaid
+flowchart TD
+    Start(["เริ่มต้น"]) --> Setup["ตั้งโฟลเดอร์ 3 อัน<br/>Prompt, Chapter, Output"]
+    Setup --> Mode{"เลือกโหมด"}
+
+    Mode -->|ส่งให้ AI| Paste["Paste Mode<br/>กด Start"]
+    Paste --> Clip1[("คลิปบอร์ดมี:<br/>พรอมต์ พร้อม ตอน 1")]
+    Clip1 --> CtrlV1["กด Ctrl+V ที่หน้า AI"]
+    CtrlV1 --> Auto1["โปรแกรมไปตอนถัดไป<br/>วนซ้ำจนหมด"]
+
+    Mode -->|รับงานจาก AI| Copy["Copy Mode<br/>กด Start"]
+    Copy --> Wait1["คัดลอกคำตอบจาก AI<br/>Ctrl+C"]
+    Wait1 --> Save1["โปรแกรมบันทึกเป็นไฟล์<br/>ใน Output ทันที"]
+    Save1 --> Auto2["ไปตอนถัดไปอัตโนมัติ"]
+
+    Mode -->|สะสมคำศัพท์| Vocab["Vocab Mode<br/>กด Start"]
+    Vocab --> Wait2["คัดลอกข้อความที่อยากเก็บ<br/>Ctrl+C"]
+    Wait2 --> Save2["ต่อท้ายไฟล์ vocab.txt"]
+
+    Auto1 --> Done(["เสร็จ"])
+    Auto2 --> Done
+    Save2 --> Done
+
+    classDef step fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#7c2d12
+    classDef clip fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+    classDef done fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+
+    class Setup,Paste,Copy,Vocab,CtrlV1,Wait1,Wait2,Auto1,Auto2,Save1,Save2 step
+    class Clip1 clip
+    class Done done
 ```
 
-### 3. Copy Mode Logic
+> สีส้ม = สิ่งที่คุณกด · สีเหลือง = สิ่งที่อยู่ในคลิปบอร์ด · สีเขียว = เสร็จ
 
-```
-1. เริ่ม monitoring คลิปบอร์ด
-2. รอการเปลี่ยนแปลงข้อความ
-3. เมื่อคลิปบอร์ดเปลี่ยน:
-   - อ่านข้อความใหม่
-   - สร้างเนื้อหา (ตาม template หรือเฉพาะข้อความ)
-   - บันทึกลงไฟล์ในโฟลเดอร์ Output
-   - ไปยังไฟล์ถัดไป
-```
+---
 
-### 4. การจัดการ Config
+## โหมด 1 — Paste Mode (วาง)
 
-```python
-# โหลด config
-def _load_saved_config():
-    cfg = load_config()
-    self.prompt_folder = cfg.get("prompt_folder")
-    self.chapter_folder = cfg.get("chapter_folder")
-    # ... โหลดค่าอื่นๆ
+**ใช้ทำอะไร**: ส่งงานให้ AI ทีละตอน โดยรวม "พรอมต์ + ตอน" เป็นข้อความเดียว แล้ววางลงคลิปบอร์ดให้พร้อมกด Ctrl+V
 
-# บันทึก config
-def _save_config():
-    save_config({
-        "prompt_folder": self.prompt_folder,
-        "chapter_folder": self.chapter_folder,
-        # ... ค่าอื่นๆ
-    })
-```
+### ขั้นตอนใช้งาน
 
-## การติดตั้งและรัน
+1. **กดปุ่ม "📁 Prompt Folder"** → เลือกโฟลเดอร์ที่มีพรอมต์
+   - หรือกด **"📄 Files…"** เลือกหลายไฟล์โดยตรง
+   - กด **"➕ เพิ่ม"** ถ้าอยากเพิ่มอีกทีหลังโดยไม่ลบของเดิม
+2. **กดปุ่ม "📁 Chapter Folder"** → เลือกโฟลเดอร์ที่มีตอนนิยาย
+3. ไฟล์ทั้งหมดจะเรียงตามชื่อ (ตอน 001, 002, ... อัตโนมัติ)
+4. **กรอง/เลือกตอน** (ไม่บังคับ):
+   - **"ตอนที่: From – To"** → เลือกช่วงที่จะทำ เช่น 1–50
+   - **"ไปตอนที่:"** → กระโดดไปตอนเลขที่กรอก
+5. **กด "▶ Start"** ที่ด้านล่าง — คลิปบอร์ดจะมีพรอมต์ + ตอนแรกพร้อม
+6. ไปที่หน้า AI → กด **Ctrl+V** (Windows) หรือ **Cmd+V** (Mac) → โปรแกรมจะไปตอนถัดไปทันที
+7. รอ AI ตอบ → กด Ctrl+V อีกครั้งสำหรับตอนถัดไป → วนแบบนี้จนหมด
 
-### ทางง่าย: โหลดไฟล์สำเร็จ
+### ตัวเลือกการวาง
 
-- **Windows:** โหลด `INKCOPY.exe` จาก [Releases](https://github.com/snibzyz/inkcopy/releases/latest) → ดับเบิลคลิก
-- **macOS:** โหลด `INKCOPY.dmg` → ลาก `INKCOPY.app` ไป `/Applications` → เปิดครั้งแรก กด "Open Anyway" ใน System Settings → Privacy & Security → ให้สิทธิ์ Accessibility
+**"นิยาย (Chapter) วางเป็น:"**
+- **ไฟล์** — วางเป็นไฟล์แนบ (เหมาะกับ ChatGPT ที่รับไฟล์ได้)
+- **ข้อความ** — วางเป็นข้อความล้วน (เหมาะกับช่องแชตทั่วไป)
 
-### ทาง dev: รันจาก source
+**"Chapters per paste:"** — กดปุ่ม + / − ปรับจำนวน
+- ตั้ง 1 = ส่งทีละตอน (แนะนำ)
+- ตั้ง 3 = รวมพร้อมกัน 3 ตอนต่อ 1 ครั้ง
 
-**Windows:**
+### ขั้นตอนแบบภาพ
 
-1. ติดตั้ง [Python 3](https://www.python.org/downloads/) แล้วเปิดตัวเลือกให้ Python อยู่ใน PATH
-2. ดับเบิลคลิก **`scripts\install.bat`** ครั้งแรก — รัน `pip install -r requirements.txt`
-3. ดับเบิลคลิก **`scripts\run.bat`** เพื่อเปิดโปรแกรม
+```mermaid
+flowchart LR
+    A["ตั้ง Prompt<br/>และ Chapter"] --> B["เลือกช่วง From-To<br/>หรือทำหมด"]
+    B --> C["กด Start<br/>คลิปบอร์ดพร้อม"]
+    C --> D["ไปหน้า AI<br/>กด Ctrl+V"]
+    D --> E["ตอนถัดไป<br/>อัตโนมัติ"]
+    E --> D
 
-**macOS / Linux:**
-
-1. ติดตั้ง Python 3 (`brew install python` บน macOS หรือ [python.org](https://www.python.org/downloads/))
-2. รัน `bash scripts/install.sh` — รัน `pip install -r requirements.txt`
-3. รัน `bash scripts/run.sh` เพื่อเปิดโปรแกรม
-4. (macOS) เปิด `System Settings → Privacy & Security → Accessibility` แล้วเปิดสิทธิ์ให้ Terminal/iTerm/Python — จำเป็นเพื่อจับฮอตคีย์ทั่วระบบ
-
-### Build เอง
-
-- **Windows:** ดับเบิลคลิก **`scripts\build.bat`** → ได้ `dist\INKCOPY.exe`
-- **macOS:** รัน `bash scripts/build.sh` → ได้ `dist/INKCOPY.app`
-
-### ปล่อย Release ใหม่ (สำหรับ maintainer)
-
-1. แก้ `__version__` ใน `inkcopy.py`
-2. `git commit -am "Release v0.X.0" && git push`
-3. `git tag v0.X.0 && git push --tags`
-4. GitHub Actions จะ build ทั้ง Windows + macOS แล้วสร้าง Release พร้อม `INKCOPY.exe` + `INKCOPY.dmg` อัตโนมัติ
-5. ผู้ใช้เวอร์ชันเก่าจะเห็นปุ่ม `⬆ vX.X.X` ในแอปเอง
-
-## การตั้งค่าเริ่มต้น
-
-1. **เลือกโฟลเดอร์ Prompt** - โฟลเดอร์ที่เก็บไฟล์ prompt (.txt, .md)
-2. **เลือกโฟลเดอร์ Chapter** - โฟลเดอร์ที่เก็บไฟล์ chapter (.txt, .md)
-3. **เลือกโฟลเดอร์ Output** - โฟลเดอร์สำหรับบันทึกไฟล์ (Copy/Vocab mode)
-
-## การปรับแต่ง
-
-### การเปลี่ยนฮอตคีย์
-
-แก้ไขใน `_register_hotkeys()` หรือใน `_HotkeyBackend` impl ของแต่ละ OS:
-
-```python
-_hotkey_backend.register(
-    on_paste=self._kb_paste_handler,
-    on_prev=lambda: self.signals.prev_chapter.emit(),     # F9
-    on_next=lambda: self.signals.next_chapter.emit(),     # F10
-    on_pause=lambda: self.signals.toggle_pause.emit(),    # F12
-)
+    classDef step fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#7c2d12
+    class A,B,C,D,E step
 ```
 
-### การปรับ UI Style
+---
 
-แก้ไขใน `_apply_styles()` - ใช้ CSS-like syntax ของ PyQt6
+## โหมด 2 — Copy Mode (คัดลอก)
 
-### การเพิ่มโหมดใหม่
+**ใช้ทำอะไร**: รอจังหวะที่คุณคัดลอกข้อความ (เช่น คำตอบของ AI) แล้วบันทึกลงไฟล์ตอนใน Output Folder ทันที — ใช้คู่กับ Paste Mode เพื่อ "ส่ง-รับ-ส่ง-รับ" ทีละตอน
 
-1. เพิ่มค่าคงที่ใน `MODE_*`
-2. เพิ่ม logic ใน `_toggle_mode()`
-3. เพิ่ม handler ใน `_on_clipboard_changed()`
+### ขั้นตอนใช้งาน
 
-## การแก้ไขปัญหา
+1. **กดปุ่ม "📁 Chapter Folder"** → เลือกโฟลเดอร์ตอนต้นทาง (ใช้ชื่อไฟล์ตามนี้)
+2. **กดปุ่ม "📁 Output Folder"** → เลือกโฟลเดอร์ที่จะบันทึก
+3. กดสลับเป็น **Copy Mode** (ปุ่มใหญ่ด้านบน เปลี่ยนเป็นสีน้ำเงิน)
+4. **กด "▶ Start"**
+5. ที่หน้า AI → คัดลอกคำตอบ (**Ctrl+C** / **Cmd+C**)
+6. โปรแกรมจะบันทึกข้อความเป็นไฟล์ในชื่อตอนถัดไปทันที (เช่น `Chapter 001.txt`, `Chapter 002.txt`, ...)
+7. ไปต่อตอนถัดไปได้เลย
 
-### ปัญหาที่พบบ่อย
+### ตัวเลือกเสริม
 
-**ฮอตคีย์ไม่ทำงาน**
-- Windows: ตรวจสอบว่าติดตั้ง `keyboard` แล้ว, บางโปรแกรมอาจ block ฮอตคีย์ (ลองรันเป็น admin)
-- macOS: ต้องให้สิทธิ์ Accessibility — `System Settings → Privacy & Security → Accessibility` แล้วเปิดสวิตช์ของ INKCOPY (หรือ Terminal ถ้ารันจาก source). ถ้าเพิ่งให้สิทธิ์ ต้องปิด-เปิดแอปใหม่
-- Linux: ต้องติดตั้ง `pynput` และอาจต้องสิทธิ์ X11/Wayland เพิ่มเติม
+**"Content at line:"** — กดปุ่ม + / − ปรับ
+- ตั้ง 1 = บันทึกข้อความตั้งแต่บรรทัดแรก
+- ตั้ง 3 = เว้น 2 บรรทัดก่อน แล้วค่อยใส่เนื้อหา (เผื่อเอาชื่อตอนต่อหัวเอง)
 
-**คลิปบอร์ดไม่ตอบสนอง**
-- บน Windows อาจต้องระยะเวลาสักครู่ให้คลิปบอร์ดอัปเดต
-- โปรแกรมใช้ delayed check 120ms เพื่อแก้ปัญหานี้
+---
 
-**ไฟล์ .lnk ไม่ทำงาน**
-- ตรวจสอบว่า PowerShell สามารถรันได้
-- .lnk resolution ใช้ PowerShell COM object
+## โหมด 3 — Vocab Mode (คำศัพท์)
 
-## License
+**ใช้ทำอะไร**: เก็บคำศัพท์/ข้อมูล/อ้างอิงต่าง ๆ ระหว่างทำงาน — ทุกครั้งที่กด Ctrl+C จะต่อท้ายลงไฟล์เดียวเรื่อย ๆ
 
-สามารถนำไปพัฒนาต่อได้ตามต้องการ
+### ขั้นตอนใช้งาน
 
-## ผู้พัฒนา
+1. **กดปุ่ม "📁 Output Folder"** → เลือกโฟลเดอร์ที่จะเก็บ
+2. **กรอกชื่อไฟล์** ที่ช่อง "Vocab file:" — ค่าเริ่มต้น `vocab.txt`
+3. กดสลับเป็น **Vocab Mode**
+4. **กด "▶ Start"**
+5. คัดลอกข้อความที่อยากเก็บ (Ctrl+C) — ข้อความใหม่จะถูกต่อท้ายไฟล์เดิม
+6. กดอีก → ต่อท้ายอีก ทำได้เรื่อย ๆ จนกว่าจะกด Stop
 
-สร้างขึ้นสำหรับการเขียนนิยายและจัดการเนื้อหาแบบอัตโนมัติ
+ใช้ได้ดีเวลาไล่อ่านเนื้อหาแล้วเจอคำศัพท์ใหม่ ๆ อยากเก็บไว้รวมไว้ที่เดียว
+
+---
+
+## ปุ่มลัด (Hotkey)
+
+ปุ่มลัดทำงานได้ทั่วระบบ — ไม่ต้องเปิดหน้าต่าง INKCOPY ค้างไว้
+
+| ปุ่ม | ทำอะไร |
+|---|---|
+| **F9** | ย้อนกลับไปตอนก่อนหน้า |
+| **F10** | ข้ามไปตอนถัดไป |
+| **F12** | หยุดชั่วคราว / ทำงานต่อ (Pause/Resume) |
+| **Ctrl+V** (Win) / **Cmd+V** (Mac) | Paste Mode — วางแล้วไปตอนถัดไป |
+| **Ctrl+C** (Win) / **Cmd+C** (Mac) | Copy / Vocab Mode — บันทึกแล้วไปตอนถัดไป |
+
+> Mac ต้องให้สิทธิ์ Accessibility ก่อน ไม่งั้นปุ่มลัดไม่ทำงาน
+
+---
+
+## การตั้งค่าต่าง ๆ บนหน้าจอ
+
+```
+┌─────────────────────────────────────────────────┐
+│  INKCOPY               ⬆ v0.2.0    −  ✕         │  ← แถบบน (อัปเดต/ย่อ/ปิด)
+├─────────────────────────────────────────────────┤
+│  [ 📋 PASTE MODE  Prompt+Chapter → Clipboard ]  │  ← ปุ่มสลับโหมด
+├─────────────────────────────────────────────────┤
+│  -- Select folders first --                     │  ← สถานะ
+├─────────────────────────────────────────────────┤
+│  📁 Prompt Folder  📄 Files…  ➕ เพิ่ม    --    │  ← ตั้งโฟลเดอร์พรอมต์
+│  ┌─ Prompt files ────────────────────────┐      │
+│  │ ☑ prompt-01.txt    (วางเป็น: ไฟล์)    │      │
+│  │ ☑ prompt-02.md     (วางเป็น: ข้อความ) │      │
+│  └────────────────────────────────────────┘     │
+│                                                  │
+│  📁 Chapter Folder  📄 Files…  ➕ เพิ่ม   --    │  ← ตั้งโฟลเดอร์ตอน
+│  ตอนที่: [From] – [To]  ✓ Apply  ↺ Reset       │  ← ช่วงตอน
+│  ไปตอนที่: [    ]                                │  ← กระโดดไปตอน
+│  นิยาย (Chapter) วางเป็น: ( ) ไฟล์  (•) ข้อความ │
+│                                                  │
+│  📁 Output Folder                          --    │  ← โฟลเดอร์ปลายทาง
+│  Vocab file: [ vocab.txt ]                       │  ← ชื่อไฟล์คำศัพท์
+│  Chapters per paste:  −  1  +                    │  ← จำนวนตอนต่อครั้ง
+│  Content at line:     −  1  +                    │  ← บรรทัดเริ่มเขียน
+│                                                  │
+│  🔄 Fetch  ⏸ Pause  ▶ Start                    │  ← ปุ่มควบคุม
+└─────────────────────────────────────────────────┘
+```
+
+### ปุ่มควบคุมด้านล่าง
+
+| ปุ่ม | ทำอะไร |
+|---|---|
+| **🔄 Fetch** | สแกนโฟลเดอร์ใหม่ (ถ้าเพิ่มไฟล์ลงไประหว่างทำงาน) |
+| **⏸ Pause** | หยุดชั่วคราว — กดอีกครั้งจะกลายเป็น ▶ Resume |
+| **▶ Start** | เริ่มทำงานในโหมดที่เลือก |
+
+---
+
+## แก้ปัญหาที่พบบ่อย
+
+| ปัญหา | วิธีแก้ |
+|---|---|
+| Windows ขึ้นแถบเตือนสีน้ำเงิน | กด **More info** → **Run anyway** (ครั้งแรกครั้งเดียว) |
+| Mac บอกว่าเปิดไม่ได้ / damaged | คลิกขวาที่ไอคอน → **Open** → **Open** (อย่าดับเบิลคลิก) |
+| **Mac: ปุ่มลัด F9/F10/Cmd+V ไม่ทำงาน** | เปิด **System Settings → Privacy & Security → Accessibility** แล้วเปิดสวิตช์ของ INKCOPY · ถ้าเพิ่งให้สิทธิ์ต้อง **ปิด-เปิดแอปใหม่** |
+| Windows: ปุ่มลัดไม่ตอบสนอง | บางโปรแกรม (เกม / Remote Desktop) ดักปุ่มลัดอยู่ ลองปิดก่อน หรือเปิด INKCOPY แบบ **Run as administrator** |
+| กด Ctrl+V แล้วไม่ไปตอนถัดไป | ตรวจว่ายังอยู่ในโหมด Paste และไม่ได้กด ⏸ Pause ค้างไว้ |
+| คัดลอก (Ctrl+C) แล้วไม่บันทึก | ตรวจว่าอยู่ใน Copy/Vocab Mode และตั้ง Output Folder แล้ว |
+| ไฟล์ `.lnk` (ทางลัด Windows) ไม่ทำงาน | INKCOPY ใช้ PowerShell อ่านทางลัด — ตรวจว่า PowerShell ไม่ถูกบล็อก |
+| ตั้งค่าหายหลังเปิดใหม่ | ลองเช็คว่ามีสิทธิ์เขียน `%APPDATA%\INKCOPY\` (Win) หรือ `~/Library/Application Support/INKCOPY/` (Mac) |
+
+---
+
+## ข้อกำหนดเครื่อง
+
+- ใช้ได้บน Windows 10/11 หรือ macOS (ทั้งชิป M1/M2/M3/M4 และ Intel)
+- ไม่ต้องลง Python หรือโปรแกรมเสริมใด ๆ — เป็นไฟล์เดียวจบ
+- ใช้แบบไม่ต่อเน็ตได้ — ต้องต่อเน็ตเฉพาะตอนเช็คอัปเดต
+
+---
+
+## ลิขสิทธิ์
+
+MIT — ใช้ได้เสรี
