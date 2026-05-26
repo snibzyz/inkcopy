@@ -160,19 +160,29 @@ test.describe('INKCOPY — clipboard pre-load (Python-style)', () => {
 
   test('paused: paste does nothing, clipboard unchanged', async ({ window }) => {
     await seed(window, {
-      promptAsText: { 'system-prompt.txt': true },
+      // All-text so the sentinel comes from clipboard.writeText (single
+      // CF_UNICODETEXT format). Mixed mode on Windows ends up CF_HDROP-only
+      // because the text portion currently lives only on the macOS branch.
+      promptAsText: { 'system-prompt.txt': true, 'glossary.txt': true },
       chapterAsText: true,
       concurrent: 1,
     })
+    // Let the initial pre-load complete + drain, otherwise the async
+    // fs.readText round-trip may finish AFTER we write SENTINEL and clobber it.
+    await waitForPreload(window)
     await window.evaluate(async () => {
-      await (window as any).inkcopy.clipboard.writeText('SENTINEL_PAUSED')
       ;(window as any).__inkcopyStoreForTests.getState().togglePaused()
     })
+    // After pause toggle, the effect's writeIfNeeded sees paused=true and
+    // returns without writing — clipboard is "frozen" with the chapter 1
+    // content. Use that as our SENTINEL instead of writing one in.
+    const sentinel = await readClipboard(window)
+    expect(sentinel.length).toBeGreaterThan(0)
     await firePaste(window)
     const text = await readClipboard(window)
-    expect(text).toBe('SENTINEL_PAUSED')
-    // Status bar swaps to the pause message; check the store directly to
-    // assert chapter index didn't advance under our feet.
+    // Clipboard should not have been touched while paused — content matches
+    // the frozen sentinel from before the toggle.
+    expect(text).toBe(sentinel)
     const currentIndex = await window.evaluate(
       () => (window as any).__inkcopyStoreForTests.getState().currentIndex as number,
     )

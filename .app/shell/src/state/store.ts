@@ -102,6 +102,8 @@ export interface AppState {
   setPromptFiles: (files: PromptFile[]) => void
   removePromptFile: (path: string) => void
   setPromptPasteMode: (displayName: string, asText: boolean) => void
+  /** Bulk-set every prompt + chapter to text or file mode in one shot. */
+  setAllPasteModes: (asText: boolean) => void
   setIncludePrompt: (include: boolean) => void
 
   setChapterFolder: (folder: string | null, files: ChapterFile[]) => void
@@ -192,6 +194,11 @@ export const useStore = create<AppState>((set, _get) => ({
     })),
   setPromptPasteMode: (displayName, asText) =>
     set((s) => ({ promptPasteModes: { ...s.promptPasteModes, [displayName]: asText } })),
+  setAllPasteModes: (asText) =>
+    set((s) => ({
+      promptPasteModes: Object.fromEntries(s.promptFiles.map((f) => [f.displayName, asText])),
+      chapterPasteAsText: asText,
+    })),
   setIncludePrompt: (include) => set({ includePrompt: include }),
 
   setChapterFolder: (folder, files) =>

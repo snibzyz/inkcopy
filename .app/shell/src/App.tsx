@@ -5,6 +5,7 @@ import { hydrateFromSettings, startAutosave } from './lib/persistence'
 import { TitleBar } from './components/TitleBar'
 import { MinimizedStatus } from './components/MinimizedStatus'
 import { ModeToggle } from './components/ModeToggle'
+import { QuickToggleBar } from './components/QuickToggleBar'
 import { StatusBar } from './components/StatusBar'
 import { DiagnosticsRow } from './components/DiagnosticsRow'
 import { PromptSection } from './components/PromptSection'
@@ -225,6 +226,7 @@ export default function App() {
 
           {mode === 'paste' ? (
             <>
+              <QuickToggleBar />
               <PromptSection />
               <ChapterSection />
               <ConcurrentRow />
