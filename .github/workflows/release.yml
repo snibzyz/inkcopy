@@ -5,53 +5,80 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build artifacts for (e.g. v0.2.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  # Resolve once so all jobs build the same revision.
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout
+      - name: Checkout (tag)
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
+          pip install pyinstaller
           pip install -r requirements.txt
-          pip install pyinstaller pillow
 
-      - name: Build INKCOPY.exe
+      - name: Build portable INKCOPY.exe
         run: python -m PyInstaller --noconfirm --clean INKCOPY.spec
 
-      - name: Upload artifact
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path inkcopy.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          Write-Host "Building NSIS installer for version $ver"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" "/DAPP_VERSION=$ver" "scripts\installer.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "NSIS failed with exit code $LASTEXITCODE" }
+          Get-ChildItem dist
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: INKCOPY-windows-${{ github.ref_name }}
-          path: dist/INKCOPY.exe
+          name: windows-${{ env.RELEASE_TAG }}
+          path: |
+            dist/INKCOPY.exe
+            dist/INKCOPY-Setup-*.exe
 
   build-macos:
     runs-on: macos-latest
     steps:
-      - name: Checkout
+      - name: Checkout (tag)
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
           pip install pyinstaller pillow
+          pip install -r requirements.txt
 
       - name: Generate .icns
         run: bash scripts/build_icns.sh
@@ -59,46 +86,51 @@ jobs:
       - name: Build INKCOPY.app
         run: python -m PyInstaller --noconfirm --clean INKCOPY.spec
 
-      - name: Package as .dmg
-        run: |
-          mkdir -p dist/dmg
-          cp -R dist/INKCOPY.app dist/dmg/
-          ln -s /Applications dist/dmg/Applications
-          hdiutil create \
-            -volname INKCOPY \
-            -srcfolder dist/dmg \
-            -ov -format UDZO \
-            dist/INKCOPY.dmg
+      - name: Package DMG (ad-hoc codesign + drag-to-Applications layout)
+        # --skip-build = reuse the .app we just built. The script itself ad-hoc
+        # codesigns the bundle (codesign --force --deep --sign -) which is what
+        # keeps macOS TCC entries stable across rebuilds — the root cause of
+        # the "toggle ON but Cmd+V silently fails" report on the previous build.
+        run: bash scripts/build_dmg.sh --skip-build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: INKCOPY-macos-${{ github.ref_name }}
-          path: dist/INKCOPY.dmg
+          name: macos-${{ env.RELEASE_TAG }}
+          path: dist/INKCOPY-v*.dmg
 
-  release:
+  publish:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: Download Windows artifact
+      - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          name: INKCOPY-windows-${{ github.ref_name }}
+          name: windows-${{ env.RELEASE_TAG }}
           path: artifacts/
 
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:
-          name: INKCOPY-macos-${{ github.ref_name }}
+          name: macos-${{ env.RELEASE_TAG }}
           path: artifacts/
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            artifacts/INKCOPY.exe
-            artifacts/INKCOPY.dmg
-          generate_release_notes: true
-          name: INKCOPY ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Upload to release (creates release if missing, replaces existing assets)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -e
+          TAG="${RELEASE_TAG}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG not found — creating."
+            gh release create "$TAG" \
+              --title "INKCOPY $TAG" \
+              --generate-notes
+          else
+            echo "Release $TAG already exists — uploading assets with --clobber."
+          fi
+          gh release upload "$TAG" artifacts/* --clobber
