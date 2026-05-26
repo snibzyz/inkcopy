@@ -6,5 +6,11 @@
     "build": "pnpm --filter @inkcopy/desktop-shell build",
     "package:win": "pnpm --filter @inkcopy/desktop-shell package:win",
     "package:mac": "pnpm --filter @inkcopy/desktop-shell package:mac"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   }
 }
