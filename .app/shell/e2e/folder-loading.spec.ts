@@ -104,9 +104,11 @@ test.describe('INKCOPY — minimize/restore window', () => {
 
     await window.getByTestId('minimize-toggle').click()
     await expect(window.getByTestId('content')).toHaveCount(0)
-    await expect(window.getByTestId('titlebar-current')).toBeVisible()
-    await expect(window.getByTestId('titlebar-current')).toContainText('chapter0001')
-    await expect(window.getByTestId('titlebar-current')).toContainText('1/4')
+    const collapsed = window.getByTestId('minimized-status')
+    await expect(collapsed).toBeVisible()
+    await expect(collapsed).toContainText('chapter0001')
+    await expect(collapsed).toContainText('ตอนที่ 1')
+    await expect(collapsed).toContainText('/ 4')
   })
 
   test('restoring the window brings back full content', async ({ window }) => {

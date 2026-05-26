@@ -68,7 +68,7 @@ test.describe('INKCOPY — visual regression', () => {
   test('minimized overlay shows current chapter inline', async ({ window }) => {
     await seedSampleData(window)
     await window.getByTestId('minimize-toggle').click()
-    await expect(window.getByTestId('titlebar-current')).toBeVisible()
+    await expect(window.getByTestId('minimized-status')).toBeVisible()
     await expect(window).toHaveScreenshot('minimized.png', SNAPSHOT_OPTS)
   })
 

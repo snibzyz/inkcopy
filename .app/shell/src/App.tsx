@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useStore } from './state/store'
 import { TitleBar } from './components/TitleBar'
+import { MinimizedStatus } from './components/MinimizedStatus'
 import { ModeToggle } from './components/ModeToggle'
 import { StatusBar } from './components/StatusBar'
 import { DiagnosticsRow } from './components/DiagnosticsRow'
@@ -80,7 +81,9 @@ export default function App() {
     <div className="flex h-screen flex-col overflow-hidden rounded-mac-sm border border-white/5 bg-vscode-editor/95 text-vscode-fg shadow-mac backdrop-blur-md">
       <TitleBar />
 
-      {!minimized ? (
+      {minimized ? (
+        <MinimizedStatus />
+      ) : (
         <main className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3" data-testid="content">
           <ModeToggle />
           <StatusBar />
@@ -106,8 +109,6 @@ export default function App() {
 
           <ActionRow />
         </main>
-      ) : (
-        <div className="px-3 py-2 text-[11px] text-vscode-muted">— ย่อแล้ว · กดลูกศรลงเพื่อขยาย —</div>
       )}
 
       <ToastStack />

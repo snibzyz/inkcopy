@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../state/store'
 import { Codicon } from '../ui/Codicon'
-import { cn } from '../ui/cn'
 
 const FULL_HEIGHT = 820
-// Just the 36px title bar + 12px padding for rounded corner safety.
-const COLLAPSED_HEIGHT = 48
+// 36px title bar + 56px MinimizedStatus row + a little breathing room.
+const COLLAPSED_HEIGHT = 100
 
 /**
  * Frameless-window title bar — drag region on the whole bar; controls are
@@ -18,10 +17,6 @@ export function TitleBar() {
   const update = useStore((s) => s.update)
   const minimized = useStore((s) => s.minimized)
   const toggleMinimized = useStore((s) => s.toggleMinimized)
-  const mode = useStore((s) => s.mode)
-  const paused = useStore((s) => s.paused)
-  const chapterFiles = useStore((s) => s.chapterFiles)
-  const currentIndex = useStore((s) => s.currentIndex)
   const [version, setVersion] = useState<string>('')
 
   useEffect(() => {
@@ -34,11 +29,6 @@ export function TitleBar() {
     window.inkcopy?.window?.setHeight?.(minimized ? COLLAPSED_HEIGHT : FULL_HEIGHT)
   }, [minimized])
 
-  const currentChapter =
-    chapterFiles.length > 0 && currentIndex < chapterFiles.length
-      ? chapterFiles[currentIndex].displayName.replace(/\.[^.]+$/, '')
-      : null
-
   return (
     <div
       className="flex h-9 items-center border-b border-vscode-border bg-vscode-titlebar px-3 text-[13px] select-none"
@@ -47,25 +37,6 @@ export function TitleBar() {
       <Codicon name="clippy" className="text-vscode-brand" />
       <span className="ml-2 font-semibold tracking-[0.04em] text-vscode-fg-bright">INKCOPY</span>
       {version ? <span className="ml-1.5 text-[13px] text-vscode-muted">v{version}</span> : null}
-
-      {minimized && currentChapter ? (
-        <div className="ml-3 flex min-w-0 items-center gap-1.5 text-[13px]" data-testid="titlebar-current">
-          <span
-            className={cn(
-              'rounded-sm px-1.5 py-0.5 text-[13px] font-semibold',
-              paused ? 'bg-yellow-500/20 text-yellow-300' : 'bg-vscode-brand/15 text-vscode-brand',
-            )}
-          >
-            {paused ? 'PAUSE' : mode.toUpperCase()}
-          </span>
-          <span className="truncate text-vscode-fg" title={currentChapter}>
-            {currentChapter}
-          </span>
-          <span className="shrink-0 text-vscode-muted">
-            {currentIndex + 1}/{chapterFiles.length}
-          </span>
-        </div>
-      ) : null}
 
       <div
         className="ml-auto flex items-center gap-1"
