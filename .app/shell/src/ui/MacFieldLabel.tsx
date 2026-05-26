@@ -11,7 +11,7 @@ type MacFieldLabelProps = {
 export function MacFieldLabel({ children, hint, className }: MacFieldLabelProps) {
   return (
     <div className={cn('mb-1.5 flex items-center gap-1.5', className)}>
-      <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-vscode-muted">{children}</span>
+      <span className="text-[13px] font-semibold tracking-[0.02em] text-vscode-fg-bright">{children}</span>
       {hint ? (
         <MacHint title={hint}>
           <span

@@ -5,7 +5,9 @@
     "dev": "pnpm --filter @inkcopy/desktop-shell dev",
     "build": "pnpm --filter @inkcopy/desktop-shell build",
     "package:win": "pnpm --filter @inkcopy/desktop-shell package:win",
-    "package:mac": "pnpm --filter @inkcopy/desktop-shell package:mac"
+    "package:mac": "pnpm --filter @inkcopy/desktop-shell package:mac",
+    "test:e2e": "pnpm --filter @inkcopy/desktop-shell test:e2e",
+    "test:e2e:headed": "pnpm --filter @inkcopy/desktop-shell test:e2e:headed"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

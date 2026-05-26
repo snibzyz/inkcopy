@@ -22,6 +22,8 @@ const { registerDialogIpc } = require('./ipc/dialog.cjs')
 const { registerSettingsIpc } = require('./ipc/settings.cjs')
 const { registerLogIpc } = require('./ipc/log.cjs')
 const { registerShellIpc } = require('./ipc/shell.cjs')
+const { registerHotkeyIpc } = require('./ipc/hotkey.cjs')
+const { registerPermissionsIpc } = require('./ipc/permissions.cjs')
 const autoUpdate = require('./autoUpdate.cjs')
 const { createLogger } = require('./helpers/logger.cjs')
 
@@ -40,12 +42,32 @@ process.on('unhandledRejection', (reason) => {
 })
 
 function createMainWindow() {
+  // INKCOPY is an always-on-top overlay positioned at the top-right of the
+  // primary display, matching the Python PyQt6 layout. Frameless + custom
+  // title bar so the chrome can be styled to fit the dark VS Code aesthetic.
+  const { screen } = require('electron')
+  const primary = screen.getPrimaryDisplay().workArea
+  const winWidth = 600
+  const winHeight = 820
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 820,
-    minWidth: 1024,
-    minHeight: 680,
-    backgroundColor: '#1e1e1e',
+    width: winWidth,
+    height: winHeight,
+    minWidth: 520,
+    minHeight: 44,
+    x: primary.x + primary.width - winWidth - 24,
+    y: primary.y + 24,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: false,
+    // Transparent shell so the rounded body + dim alpha background show
+    // through to the desktop. Without this the chrome looks like a square
+    // box and the minimized state stays a solid rectangle.
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: true,
+    roundedCorners: true,
+    resizable: true,
     show: false,
     icon: path.join(__dirname, '..', 'public', 'logo.ico'),
     autoHideMenuBar: true,
@@ -105,11 +127,13 @@ app.whenReady().then(() => {
   registerSettingsIpc()
   registerLogIpc()
   registerShellIpc()
+  registerHotkeyIpc(() => mainWindow)
+  registerPermissionsIpc()
   autoUpdate.registerIpc()
 
   createMainWindow()
   autoUpdate.start(mainWindow)
-  log.info('app ready', { isDev, version: app.getVersion() })
+  log.info('app ready', { isDev, version: app.getVersion(), e2e: process.env.INKCOPY_E2E === '1' })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()

@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('inkcopy', {
     toggleDevTools: () => invoke('window:toggleDevTools'),
     reload: () => invoke('window:reload'),
     setTitle: (title) => invoke('window:setTitle', { title }),
+    setHeight: (height) => invoke('window:setHeight', { height }),
   },
 
   fs: {
@@ -60,8 +61,12 @@ contextBridge.exposeInMainWorld('inkcopy', {
     chooseFiles: (opts) => invoke('fs:chooseFiles', opts || {}),
     chooseFile: (opts) => invoke('fs:chooseFile', opts || {}),
 
-    /** Read / write (UTF-8 text) */
-    readText: (filePath) => invoke('fs:readText', { path: filePath }),
+    /** Read / write (UTF-8 text) — returns content string directly, throws on error. */
+    readText: async (filePath) => {
+      const result = await invoke('fs:readText', { path: filePath })
+      if (result && result.ok) return result.content
+      throw new Error(result && result.error ? result.error : 'fs:readText failed')
+    },
     writeText: (filePath, content) => invoke('fs:writeText', { path: filePath, content }),
 
     /** Read / write (binary as base64) */
@@ -122,9 +127,37 @@ contextBridge.exposeInMainWorld('inkcopy', {
     beep: () => invoke('shell:beep'),
   },
 
-  // ─── เพิ่ม namespace ของแอปคุณตรงนี้ ────────────────────────────────────
-  // เช่น:
-  //   tts: { start, cancel, onEvent, ... }
-  //   crawler: { fetch, listSites, ... }
-  //   render: { encode, preview, ... }
+  // ─── INKCOPY-specific namespace ─────────────────────────────────────────
+  hotkey: {
+    register: () => invoke('hotkey:register'),
+    unregister: () => invoke('hotkey:unregister'),
+    sendPaste: () => invoke('hotkey:sendPaste'),
+    stats: () => invoke('hotkey:stats'),
+    onPaste: (handler) => subscribe('hotkey:paste', handler),
+    onPrev: (handler) => subscribe('hotkey:prev', handler),
+    onNext: (handler) => subscribe('hotkey:next', handler),
+    onPause: (handler) => subscribe('hotkey:pause', handler),
+    onKeyEvent: (handler) => subscribe('hotkey:keyEvent', handler),
+    // ── E2E test hooks ──────────────────────────────────────────────────
+    // Only exposed when the main process was launched with INKCOPY_E2E=1.
+    // Lets Playwright dispatch synthetic hotkey events without the native
+    // listener being wired in.
+    ...(process.env.INKCOPY_E2E === '1'
+      ? {
+          _testFirePaste: () => invoke('hotkey:_testFirePaste'),
+          _testFirePrev: () => invoke('hotkey:_testFirePrev'),
+          _testFireNext: () => invoke('hotkey:_testFireNext'),
+        }
+      : {}),
+  },
+
+  permissions: {
+    check: () => invoke('permissions:check'),
+    openSettings: (which) => invoke('permissions:openSettings', { which }),
+  },
+
+  clipboardEx: {
+    writeFiles: (paths) => invoke('clipboard:writeFiles', { paths }),
+    writeMixed: (payload) => invoke('clipboard:writeMixed', payload),
+  },
 })

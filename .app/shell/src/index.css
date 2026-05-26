@@ -6,6 +6,14 @@
   html, body, #root {
     height: 100%;
   }
+  /* Frameless transparent shell: clear the html/body chrome so the rounded
+     dark surface inside App.tsx is what the user actually sees. Without this
+     reset the body paints a solid rect that defeats the transparent window. */
+  html, body {
+    background: transparent !important;
+    margin: 0;
+    padding: 0;
+  }
   body {
     font-family: Tahoma, 'Segoe UI', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
