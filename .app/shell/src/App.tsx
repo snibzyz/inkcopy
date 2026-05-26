@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from './state/store'
 import { buildPastePayload, writePayloadToClipboard } from './lib/paste'
+import { hydrateFromSettings, startAutosave } from './lib/persistence'
 import { TitleBar } from './components/TitleBar'
 import { MinimizedStatus } from './components/MinimizedStatus'
 import { ModeToggle } from './components/ModeToggle'
@@ -33,6 +34,22 @@ export default function App() {
   const togglePaused = useStore((s) => s.togglePaused)
   const concurrent = useStore((s) => s.concurrentChapters)
   const showToast = useStore((s) => s.showToast)
+  const [hydrated, setHydrated] = useState(false)
+
+  // Hydrate persisted settings before any other effect kicks in. Autosave
+  // starts AFTER hydration so the initial restore doesn't trigger a redundant
+  // patch back to disk.
+  useEffect(() => {
+    let unsub: (() => void) | undefined
+    void (async () => {
+      await hydrateFromSettings()
+      setHydrated(true)
+      unsub = startAutosave()
+    })()
+    return () => {
+      unsub?.()
+    }
+  }, [])
 
   useEffect(() => {
     const offPaste = window.inkcopy?.hotkey?.onPaste?.(() => {
@@ -95,6 +112,7 @@ export default function App() {
   const chapterCount = useStore((s) => s.chapterFiles.length)
   const hotkeysRegistered = useStore((s) => s.hotkeysRegistered)
   useEffect(() => {
+    if (!hydrated) return
     const ready = promptCount > 0 && chapterCount > 0
     if (ready && !hotkeysRegistered) {
       void window.inkcopy?.hotkey?.register?.().then((res) => {
@@ -104,7 +122,7 @@ export default function App() {
       void window.inkcopy?.hotkey?.unregister?.()
       useStore.getState().setHotkeysRegistered(false)
     }
-  }, [promptCount, chapterCount, hotkeysRegistered])
+  }, [hydrated, promptCount, chapterCount, hotkeysRegistered])
 
   return (
     <div className="flex h-screen flex-col overflow-hidden rounded-mac-sm border border-white/5 bg-vscode-editor/95 text-vscode-fg shadow-mac backdrop-blur-md">
