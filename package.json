@@ -1,0 +1,10 @@
+{
+  "name": "inkcopy-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @inkcopy/desktop-shell dev",
+    "build": "pnpm --filter @inkcopy/desktop-shell build",
+    "package:win": "pnpm --filter @inkcopy/desktop-shell package:win",
+    "package:mac": "pnpm --filter @inkcopy/desktop-shell package:mac"
+  }
+}

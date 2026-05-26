@@ -21,3 +21,11 @@ Thumbs.db
 Desktop.ini
 .vscode/
 .idea/
+
+# Node / Electron (.app/shell)
+node_modules/
+.app/shell/dist/
+.app/shell/dist-electron/
+.app/shell/release/
+.pnpm-store/
+*.log

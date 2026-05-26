@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    font-family: Tahoma, 'Segoe UI', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* codicon spin modifier */
+.codicon-modifier-spin {
+  animation: codicon-spin 1.5s steps(30) infinite;
+}
+@keyframes codicon-spin {
+  100% { transform: rotate(360deg); }
+}
