@@ -60,7 +60,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
@@ -168,10 +168,140 @@ def _macos_accessibility_trusted() -> bool | None:
         return None
 
 
+def _macos_input_monitoring_trusted() -> bool | None:
+    """
+    Best-effort check for the "Input Monitoring" privacy bucket via IOKit's
+    IOHIDCheckAccess. Returns True/False/None.
+
+    macOS Catalina+ split Accessibility into two TCC entries:
+      • Accessibility   — required to *synthesize* events (CGEventPost / pynput)
+      • Input Monitoring — required to *observe* events from other apps
+                          (CGEventTap, in some macOS versions also affects
+                          NSEvent's global key monitor)
+
+    A user toggling only one and reporting "permission ON" is the most common
+    source of "Cmd+V silently fails" reports, so surface it explicitly.
+
+    kIOHIDRequestTypeListenEvent = 1
+    kIOHIDAccessTypeGranted      = 0
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+        lib_path = ctypes.util.find_library("IOKit")
+        if not lib_path:
+            return None
+        lib = ctypes.cdll.LoadLibrary(lib_path)
+        if not hasattr(lib, "IOHIDCheckAccess"):
+            return None
+        lib.IOHIDCheckAccess.restype = ctypes.c_uint32
+        lib.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
+        result = int(lib.IOHIDCheckAccess(1))
+        if result == 0:
+            return True
+        if result == 1:
+            return False
+        return None
+    except Exception:
+        return None
+
+
+def _running_from_macos_dmg() -> bool:
+    """
+    True if the frozen .app is being run directly from a mounted DMG.
+    TCC is unreliable for DMG-mounted bundles — the user must drag
+    INKCOPY.app into /Applications/ for permissions to stick.
+    """
+    if sys.platform != "darwin":
+        return False
+    if not getattr(sys, "frozen", False):
+        return False
+    return "/Volumes/" in (sys.executable or "")
+
+
+# ---------------------------------------------------------------------------
+# macOS synthetic Cmd+V via Quartz CGEventPost.
+# pynput's Controller works in most cases but is unreliable on Sonoma+
+# (CGEventCreateKeyboardEvent vs the deprecated path it uses). Using
+# CGEventPost directly is what Apple itself recommends and what every
+# automation tool (Karabiner, Hammerspoon) standardised on.
+# ---------------------------------------------------------------------------
+_QUARTZ_LIB = None
+
+
+def _quartz_lib():
+    global _QUARTZ_LIB
+    if _QUARTZ_LIB is not None or sys.platform != "darwin":
+        return _QUARTZ_LIB
+    try:
+        import ctypes
+        import ctypes.util
+        path = ctypes.util.find_library("ApplicationServices")
+        if not path:
+            return None
+        lib = ctypes.cdll.LoadLibrary(path)
+        lib.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
+        lib.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_bool]
+        lib.CGEventSetFlags.restype = None
+        lib.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        lib.CGEventPost.restype = None
+        lib.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+        lib.CFRelease.restype = None
+        lib.CFRelease.argtypes = [ctypes.c_void_p]
+        _QUARTZ_LIB = lib
+    except Exception as exc:
+        _QUARTZ_LIB = None
+    return _QUARTZ_LIB
+
+
+def _cg_send_cmd_v() -> bool:
+    """Synthesize Cmd down → V down → V up → Cmd up via Quartz."""
+    if sys.platform != "darwin":
+        return False
+    lib = _quartz_lib()
+    if lib is None:
+        return False
+    try:
+        kCGHIDEventTap = 0
+        kCGEventFlagMaskCommand = 1 << 20
+        VK_V = 9  # Carbon virtual keycode for V
+        ev_down = lib.CGEventCreateKeyboardEvent(None, VK_V, True)
+        if not ev_down:
+            return False
+        ev_up = lib.CGEventCreateKeyboardEvent(None, VK_V, False)
+        if not ev_up:
+            lib.CFRelease(ev_down)
+            return False
+        try:
+            lib.CGEventSetFlags(ev_down, kCGEventFlagMaskCommand)
+            lib.CGEventSetFlags(ev_up, kCGEventFlagMaskCommand)
+            lib.CGEventPost(kCGHIDEventTap, ev_down)
+            lib.CGEventPost(kCGHIDEventTap, ev_up)
+        finally:
+            lib.CFRelease(ev_down)
+            lib.CFRelease(ev_up)
+        return True
+    except Exception as exc:
+        _log(f"CGEventPost Cmd+V failed: {exc}", "ERROR")
+        return False
+
+
 _log(f"==== INKCOPY {__version__} starting on {sys.platform} ====")
 _log(f"frozen={getattr(sys, 'frozen', False)} executable={sys.executable}")
 _log(f"config={CONFIG_PATH}")
 _log(f"log={LOG_PATH}")
+if sys.platform == "darwin":
+    _log(f"macOS Accessibility trusted: {_macos_accessibility_trusted()}")
+    _log(f"macOS Input Monitoring trusted: {_macos_input_monitoring_trusted()}")
+    if _running_from_macos_dmg():
+        _log(
+            "Running from /Volumes/ (DMG). macOS TCC will likely refuse to grant "
+            "hotkey permissions reliably. Drag INKCOPY.app to /Applications/ and "
+            "re-grant Accessibility + Input Monitoring there.",
+            "WARN",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +877,10 @@ else:
             return target in self._mods
 
         def send_paste(self) -> bool:
+            # Prefer Quartz CGEventPost on macOS — pynput Controller is unreliable
+            # on Sonoma+ (silently no-ops in browser contexts).
+            if sys.platform == "darwin" and _cg_send_cmd_v():
+                return True
             mod = _pynkb.Key.cmd if sys.platform == "darwin" else _pynkb.Key.ctrl
             try:
                 with self._controller.pressed(mod):
@@ -837,8 +971,13 @@ else:
                 try:
                     self.stats["keys_received"] += 1
                     kc = int(event.keyCode())
-                    cmd_held = bool(int(event.modifierFlags()) & _NS_CMD_KEY_MASK)
-                    self.stats["last_key_repr"] = f"kc={kc} cmd={cmd_held}"
+                    flags = int(event.modifierFlags())
+                    cmd_held = bool(flags & _NS_CMD_KEY_MASK)
+                    self.stats["last_key_repr"] = f"kc={kc} cmd={cmd_held} flags=0x{flags:x}"
+                    # Verbose per-key trace so users can confirm the monitor
+                    # actually receives events (the #1 macOS failure mode is
+                    # "permission appears ON but no events ever arrive").
+                    _log(f"NSEvent keyDown kc={kc} cmd={cmd_held} flags=0x{flags:x}")
 
                     if kc == _MAC_KC_V:
                         self.stats["v_keys_seen"] += 1
@@ -884,12 +1023,20 @@ else:
                     return False
 
             def send_paste(self) -> bool:
-                # pynput Controller is safe here: send_paste is invoked from
-                # the Qt main thread via QTimer.singleShot, not from a worker.
+                # Prefer Quartz CGEventPost — pynput Controller is unreliable on
+                # macOS Sonoma+ because Apple changed CGEventCreateKeyboardEvent
+                # behavior for assistive use, and pynput's translation layer
+                # silently no-ops in some app contexts (especially Electron-based
+                # browsers like Chrome/Gemini).
+                if _cg_send_cmd_v():
+                    _log("send_paste: CGEventPost ok")
+                    return True
+                _log("send_paste: CGEventPost failed, trying pynput", "WARN")
                 try:
                     with self._controller.pressed(_pynkb.Key.cmd):
                         self._controller.press("v")
                         self._controller.release("v")
+                    _log("send_paste: pynput ok")
                     return True
                 except Exception as exc:
                     _log(f"send_paste error: {exc}", "ERROR")
@@ -963,9 +1110,9 @@ class SmartClipboardOverlay(QWidget):
         self.prompt_paste_modes: dict[str, bool] = {}
         self._legacy_prompt_all_text: bool | None = None  # migrate from prompt_paste_as_text once
         self.chapter_paste_as_text: bool = False  # chapters: single toggle file vs text
-        # Mixed file+text: คลิปบอร์ด = ข้อความ → Ctrl+V คุณวาง text → โปรแกรม Ctrl+V ไฟล์ → Ctrl+V ข้อความซ้ำ → สลับตอน
+        # Mixed file+text: clipboard = text → user Cmd/Ctrl+V pastes text →
+        # app sets clipboard = files → synthetic Cmd/Ctrl+V pastes files → advance chapter
         self._staged_pending_file_paths: list[str] | None = None
-        self._staged_plain_text_for_repeat: str | None = None
         self._suppress_paste_hotkey: bool = False
         self._staged_sequence_active: bool = False  # กัน Ctrl+V ซ้ำระหว่างรอ → advance ผิดรอบ
         # หลัง Ctrl+V ของคุณ (โหมดไฟล์+ข้อความ): แชทมักต้องรอก่อนค่อยรับ paste ข้อความ — ปรับได้ใน config.json
@@ -2694,7 +2841,6 @@ class SmartClipboardOverlay(QWidget):
             return
 
         self._staged_pending_file_paths = None
-        self._staged_plain_text_for_repeat = None
         self._staged_sequence_active = False
         self._ignore_clipboard_change = True
 
@@ -2732,12 +2878,11 @@ class SmartClipboardOverlay(QWidget):
         text_combined = "\n\n".join(p for k, p in ordered_parts if k == "text")
 
         # แอปเว็บมักรับแค่ไฟล์ถ้ามีทั้ง URL และ text ในคลิปบอร์ดชุดเดียว — แยกหลายรอบ:
-        # Ctrl+V คุณ = text | โปรแกรม Ctrl+V = ไฟล์ | โปรแกรม Ctrl+V = text อีกครั้ง (ลำดับในแชท) → สลับตอน
+        # Mixed paste: user Cmd+V → text pasted | synthetic Cmd+V → files pasted | advance
         if has_text and has_file:
             mime.setText(text_combined)
             clipboard.setMimeData(mime)
             self._staged_pending_file_paths = file_paths
-            self._staged_plain_text_for_repeat = text_combined
             _log(f"Paste mode (mixed): text={len(text_combined)} chars, files={len(file_paths)} staged")
         elif has_text:
             mime.setText(text_combined)
@@ -2847,7 +2992,12 @@ class SmartClipboardOverlay(QWidget):
         QApplication.processEvents()
         _log(f"Staged file paste: {len(paths)} files queued (native={wrote_native})")
         ms = max(40, min(self.staged_ms_clipboard_to_ctrl_v, 3000))
-        QTimer.singleShot(ms, lambda: self._staged_send_synthetic_ctrl_v(self._staged_after_file_paste_prepare_text))
+        # After the synthetic file paste, advance to the next chapter directly.
+        # The previous 0.2.1 flow re-pasted the text a third time "for chat
+        # ordering" but observation shows Gemini/ChatGPT already place files
+        # under the message body regardless of paste order — the third paste
+        # only adds a race window where chapter advance can be missed.
+        QTimer.singleShot(ms, lambda: self._staged_send_synthetic_ctrl_v(None))
 
     def _inject_ctrl_v_windows(self) -> None:
         """สำรอง: keybd_event Ctrl+V (Windows)."""
@@ -2884,24 +3034,10 @@ class SmartClipboardOverlay(QWidget):
         done = after_delay if after_delay is not None else self._staged_clear_suppress_and_advance
         QTimer.singleShot(ms, done)
 
-    def _staged_after_file_paste_prepare_text(self):
-        """หลังวางไฟล์แล้ว — คืนข้อความลงคลิปบอร์ดแล้ว Ctrl+V สังเคราะห์รอบสอง."""
-        txt = self._staged_plain_text_for_repeat or ""
-        mime = QMimeData()
-        mime.setText(txt)
-        QApplication.clipboard().setMimeData(mime)
-        QApplication.processEvents()
-        ms = max(40, min(self.staged_ms_clipboard_to_ctrl_v, 3000))
-        QTimer.singleShot(ms, self._staged_send_synthetic_text_repeat)
-
-    def _staged_send_synthetic_text_repeat(self):
-        self._staged_send_synthetic_ctrl_v()
-
     def _staged_clear_suppress_and_advance(self):
         self._suppress_paste_hotkey = False
         self._ignore_clipboard_change = False
         self._staged_sequence_active = False
-        self._staged_plain_text_for_repeat = None
         self._finish_paste_advance()
 
     def _finish_paste_advance(self):
@@ -3027,19 +3163,33 @@ class SmartClipboardOverlay(QWidget):
         except Exception:
             alive = False
 
-        # On Mac: re-query the live TCC trust (toggle ON ≠ TCC trusts the binary).
-        ax_trusted = _macos_accessibility_trusted()  # True / False / None
-
         registered = self.hotkeys_registered
         bits: list[str] = []
 
         if sys.platform == "darwin":
+            # DMG path is the #1 silent cause of "permission ON but no events"
+            # — surface it loudly before showing the toggle statuses.
+            if _running_from_macos_dmg():
+                bits.append(
+                    "🔴 Running from DMG (/Volumes/) — macOS will refuse to remember "
+                    "permissions. Drag INKCOPY.app to /Applications/ and re-grant."
+                )
+
+            ax_trusted = _macos_accessibility_trusted()  # True / False / None
             if ax_trusted is False:
-                bits.append("🔴 Accessibility: NOT trusted (toggle may show ON but TCC rejects this binary — remove + re-add INKCOPY in System Settings → Privacy & Security → Accessibility, then Quit & reopen)")
+                bits.append("🔴 Accessibility: NOT trusted (System Settings → Privacy & Security → Accessibility — remove & re-add INKCOPY)")
             elif ax_trusted is True:
                 bits.append("🟢 Accessibility: trusted")
             else:
                 bits.append("🟡 Accessibility: unknown")
+
+            im_trusted = _macos_input_monitoring_trusted()
+            if im_trusted is False:
+                bits.append("🔴 Input Monitoring: NOT granted (System Settings → Privacy & Security → Input Monitoring — add INKCOPY)")
+            elif im_trusted is True:
+                bits.append("🟢 Input Monitoring: granted")
+            else:
+                bits.append("🟡 Input Monitoring: unknown")
 
         if not registered:
             bits.append("⚪ Hotkeys not registered yet — set Prompt + Chapter folder first")
@@ -3047,8 +3197,14 @@ class SmartClipboardOverlay(QWidget):
             bits.append(
                 f"🟢 Hotkey listener: alive · keys={stats.get('keys_received', 0)} "
                 f"V={stats.get('v_keys_seen', 0)} pastes={stats.get('paste_fires', 0)} "
-                f"F10={stats.get('next_fires', 0)}"
+                f"F9={stats.get('prev_fires', 0)} F10={stats.get('next_fires', 0)}"
             )
+            # If the listener is alive but has received ZERO keys after we've been
+            # waiting more than a few seconds, the most likely cause on macOS is
+            # the permission split. Add an explicit hint so users don't have to
+            # guess what to do next.
+            if sys.platform == "darwin" and registered and stats.get("keys_received", 0) == 0:
+                bits.append("⚠ No keys observed — check Input Monitoring permission, then Quit & reopen INKCOPY")
         else:
             bits.append("🔴 Hotkey listener: DEAD — attempting restart")
             _log("Listener dead — attempting restart", "WARN")
