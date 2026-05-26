@@ -89,6 +89,10 @@ contextBridge.exposeInMainWorld('inkcopy', {
   clipboard: {
     readText: () => invoke('clipboard:readText'),
     writeText: (text) => invoke('clipboard:writeText', { text }),
+    /** Native file URLs (Windows CF_HDROP / macOS NSFilenamesPboardType). */
+    writeFiles: (paths) => invoke('clipboard:writeFiles', { paths }),
+    /** Files + text in one clipboard transaction. */
+    writeMixed: (payload) => invoke('clipboard:writeMixed', payload),
     /** ล้าง clipboard */
     clear: () => invoke('clipboard:clear'),
   },
@@ -156,8 +160,4 @@ contextBridge.exposeInMainWorld('inkcopy', {
     openSettings: (which) => invoke('permissions:openSettings', { which }),
   },
 
-  clipboardEx: {
-    writeFiles: (paths) => invoke('clipboard:writeFiles', { paths }),
-    writeMixed: (payload) => invoke('clipboard:writeMixed', payload),
-  },
 })

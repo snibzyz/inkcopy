@@ -56,8 +56,8 @@ test.describe('INKCOPY — smoke', () => {
     await expect(window.getByTestId('pause-toggle')).toBeDisabled()
   })
 
-  test('register hotkey button disabled when no prompt/chapter set', async ({ window }) => {
-    await expect(window.getByTestId('register-hotkey')).toBeDisabled()
+  test('no manual register-hotkey button (auto-registers when folders ready)', async ({ window }) => {
+    await expect(window.getByTestId('register-hotkey')).toHaveCount(0)
   })
 })
 

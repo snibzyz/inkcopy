@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useStore } from './state/store'
+import { buildPastePayload, writePayloadToClipboard } from './lib/paste'
 import { TitleBar } from './components/TitleBar'
 import { MinimizedStatus } from './components/MinimizedStatus'
 import { ModeToggle } from './components/ModeToggle'
@@ -35,20 +36,29 @@ export default function App() {
 
   useEffect(() => {
     const offPaste = window.inkcopy?.hotkey?.onPaste?.(() => {
-      const { mode: m, paused, chapterFiles, currentIndex, concurrentChapters, promptFiles } = useStore.getState()
-      if (m !== 'paste' || paused || !chapterFiles.length) return
-      const remaining = chapterFiles.length - currentIndex
-      const toPaste = Math.min(concurrentChapters, remaining)
-      if (toPaste <= 0) return
-      const label = toPaste === 1
-        ? chapterFiles[currentIndex].displayName
-        : `${chapterFiles[currentIndex].displayName}…${chapterFiles[currentIndex + toPaste - 1].displayName}`
-      showToast({
-        message: `วาง: ${promptFiles.length} Prompt + ${label}`,
-        tone: 'paste',
-        durationMs: 1800,
-      })
-      advanceChapter(toPaste)
+      void (async () => {
+        const state = useStore.getState()
+        const payload = await buildPastePayload(state)
+        if (!payload) return
+        try {
+          const kind = await writePayloadToClipboard(payload)
+          await window.inkcopy.log.info('paste', 'wrote clipboard', {
+            kind,
+            chars: payload.text.length,
+            files: payload.files.length,
+            label: payload.toastLabel,
+          })
+        } catch (err) {
+          showToast({ message: `เขียน clipboard ไม่ได้: ${(err as Error).message}`, tone: 'error', durationMs: 4000 })
+          return
+        }
+        showToast({
+          message: `วาง: ${state.promptFiles.length} Prompt + ${payload.toastLabel}`,
+          tone: 'paste',
+          durationMs: 1800,
+        })
+        advanceChapter(payload.chapterCount)
+      })()
     })
     const offPrev = window.inkcopy?.hotkey?.onPrev?.(() => {
       const { currentIndex } = useStore.getState()
@@ -76,6 +86,25 @@ export default function App() {
     })
     return () => off?.()
   }, [])
+
+  // Auto-register / unregister hotkeys based on folder state — matches
+  // inkcopy.py's behavior where the hotkey listener attaches as soon as both
+  // folders are picked. Avoids forcing the user through an extra button click
+  // every session.
+  const promptCount = useStore((s) => s.promptFiles.length)
+  const chapterCount = useStore((s) => s.chapterFiles.length)
+  const hotkeysRegistered = useStore((s) => s.hotkeysRegistered)
+  useEffect(() => {
+    const ready = promptCount > 0 && chapterCount > 0
+    if (ready && !hotkeysRegistered) {
+      void window.inkcopy?.hotkey?.register?.().then((res) => {
+        useStore.getState().setHotkeysRegistered(!!res?.ok)
+      })
+    } else if (!ready && hotkeysRegistered) {
+      void window.inkcopy?.hotkey?.unregister?.()
+      useStore.getState().setHotkeysRegistered(false)
+    }
+  }, [promptCount, chapterCount, hotkeysRegistered])
 
   return (
     <div className="flex h-screen flex-col overflow-hidden rounded-mac-sm border border-white/5 bg-vscode-editor/95 text-vscode-fg shadow-mac backdrop-blur-md">

@@ -63,7 +63,7 @@ export function DiagnosticsRow() {
   }
 
   if (!hotkeysRegistered) {
-    bits.push({ tone: 'muted', icon: 'circle-outline', text: 'ยังไม่พร้อมใช้ — เลือกโฟลเดอร์ Prompt + ตอนก่อน แล้วกดปุ่ม "เริ่มใช้งาน"' })
+    bits.push({ tone: 'muted', icon: 'circle-outline', text: 'ยังไม่พร้อมใช้ — เลือกโฟลเดอร์ Prompt + ตอนก่อน · Hotkey จะเริ่มทำงานอัตโนมัติ' })
   } else {
     bits.push({
       tone: 'ok',
