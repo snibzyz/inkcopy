@@ -42,13 +42,15 @@ process.on('unhandledRejection', (reason) => {
 })
 
 function createMainWindow() {
-  // INKCOPY is an always-on-top overlay positioned at the top-right of the
-  // primary display, matching the Python PyQt6 layout. Frameless + custom
-  // title bar so the chrome can be styled to fit the dark VS Code aesthetic.
+  // INKCOPY is an always-on-top overlay anchored to the right edge of the
+  // primary display, matching the Python PyQt6 layout. We open at the full
+  // available height of the display (workArea = screen minus taskbar/dock)
+  // so the chapter list can grow with the screen — no outer scrollbar even
+  // with hundreds of chapters loaded.
   const { screen } = require('electron')
   const primary = screen.getPrimaryDisplay().workArea
-  const winWidth = 600
-  const winHeight = 820
+  const winWidth = 720
+  const winHeight = Math.max(640, primary.height - 24)
 
   mainWindow = new BrowserWindow({
     width: winWidth,

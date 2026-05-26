@@ -65,7 +65,7 @@ export function ChapterSection() {
   }
 
   return (
-    <section className="space-y-2" data-testid="chapter-section">
+    <section className="flex flex-1 min-h-0 flex-col gap-2" data-testid="chapter-section">
       <div className="flex items-center gap-2">
         <MacFieldLabel>ตอนนิยาย</MacFieldLabel>
         <span className="text-[13px] text-vscode-muted">
@@ -179,7 +179,7 @@ export function ChapterSection() {
       </div>
 
       {files.length ? (
-        <div className="max-h-[140px] overflow-y-auto rounded-sm border border-vscode-border bg-vscode-input/30 p-1">
+        <div className="flex-1 min-h-[160px] overflow-y-auto rounded-sm border border-vscode-border bg-vscode-input/30 p-1">
           {files.map((f, idx) => (
             <button
               key={f.path}
