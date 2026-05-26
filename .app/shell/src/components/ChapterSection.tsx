@@ -179,7 +179,7 @@ export function ChapterSection() {
       </div>
 
       {files.length ? (
-        <div className="flex-1 min-h-[160px] overflow-y-auto rounded-sm border border-vscode-border bg-vscode-input/30 p-1">
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-sm border border-vscode-border bg-vscode-input/30 p-1">
           {files.map((f, idx) => (
             <button
               key={f.path}

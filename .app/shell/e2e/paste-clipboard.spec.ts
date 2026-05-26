@@ -66,60 +66,72 @@ async function firePaste(window: import('@playwright/test').Page) {
   await window.evaluate(async () => {
     await (window as any).inkcopy.hotkey['_testFirePaste']()
   })
-  // Give buildPastePayload's async fs.readText calls + the IPC writeMixed
-  // round-trip a chance to settle before assertion.
-  await window.waitForTimeout(200)
+  // After paste: advance runs synchronously, then the pre-load effect
+  // re-writes the clipboard async with the NEXT chapter's payload. Wait long
+  // enough for that round-trip to settle.
+  await window.waitForTimeout(300)
 }
 
-test.describe('INKCOPY — paste actually writes to clipboard', () => {
-  test('all-text mode: prompt text + chapter text → joined clipboard text', async ({ window }) => {
+/** Wait until the pre-load clipboard write completes after seeding state. */
+async function waitForPreload(window: import('@playwright/test').Page) {
+  await window.waitForTimeout(300)
+}
+
+test.describe('INKCOPY — clipboard pre-load (Python-style)', () => {
+  test('all-text mode: prompt + chapter pre-loaded on seed (before any paste)', async ({ window }) => {
     await seed(window, {
       promptAsText: { 'system-prompt.txt': true, 'glossary.txt': true },
       chapterAsText: true,
       concurrent: 1,
     })
-    await firePaste(window)
+    await waitForPreload(window)
 
+    // Clipboard should already contain chapter 1's payload before the user
+    // even presses Cmd+V — the pre-load effect ran after seed.
     const text = await readClipboard(window)
     expect(text).toContain('professional Thai novel translator')
     expect(text).toContain('ศัพท์เฉพาะ')
     expect(text).toContain('บทที่ ๑')
     expect(text).toContain('เยว่เฉิน')
-    // Three pieces joined by exactly one blank-line separator
     expect(text.split(/\n\n+/).length).toBeGreaterThanOrEqual(3)
   })
 
-  test('concurrent=2 packs two chapters into one paste', async ({ window }) => {
+  test('concurrent=2: clipboard pre-loaded with chapters 1+2 (not 3)', async ({ window }) => {
     await seed(window, {
       promptAsText: { 'system-prompt.txt': true, 'glossary.txt': true },
       chapterAsText: true,
       concurrent: 2,
     })
-    await firePaste(window)
+    await waitForPreload(window)
     const text = await readClipboard(window)
     expect(text).toContain('บทที่ ๑')
     expect(text).toContain('บทที่ ๒')
     expect(text).not.toContain('บทที่ ๓')
   })
 
-  test('chapter file mode: clipboard ends up empty of text (files written natively)', async ({ window }) => {
+  test('after firePaste: clipboard rotates to NEXT chapter (chapter 2)', async ({ window }) => {
+    await seed(window, {
+      promptAsText: { 'system-prompt.txt': true, 'glossary.txt': true },
+      chapterAsText: true,
+      concurrent: 1,
+    })
+    await waitForPreload(window)
+    await firePaste(window)
+
+    const text = await readClipboard(window)
+    // After paste, the pre-load effect re-armed with chapter 2.
+    expect(text).toContain('บทที่ ๒')
+    expect(text).not.toContain('บทที่ ๑')
+  })
+
+  test('chapter file mode: clipboard writeFiles call did not throw', async ({ window }) => {
     await seed(window, {
       promptAsText: {},
       chapterAsText: false,
       concurrent: 1,
     })
-    // Set known text first so we can detect whether the paste cleared/changed it
-    await window.evaluate(async () => {
-      await (window as any).inkcopy.clipboard.writeText('SENTINEL_BEFORE_PASTE')
-    })
-    await firePaste(window)
-
-    // All-file payload → writeFiles path. The text portion of the clipboard
-    // is implementation-defined per OS; on Windows CF_HDROP doesn't reset
-    // CF_UNICODETEXT so the sentinel may remain. Either way the renderer
-    // shouldn't have stored the SENTINEL in our state.
+    await waitForPreload(window)
     const text = await readClipboard(window)
-    // Loose check — at minimum the call didn't throw
     expect(typeof text).toBe('string')
   })
 

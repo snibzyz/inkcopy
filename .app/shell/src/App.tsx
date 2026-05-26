@@ -52,30 +52,28 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    // Cmd/Ctrl+V handler — by the time uiohook fires we're already AFTER the
+    // OS has consumed the keypress, so the clipboard write happens too late
+    // for *this* paste. We rely on the pre-load effect below to keep the
+    // clipboard armed with the upcoming chapter; the handler here just toasts
+    // what was just pasted and advances the index (which re-triggers the
+    // effect to pre-load the next chapter).
     const offPaste = window.inkcopy?.hotkey?.onPaste?.(() => {
-      void (async () => {
-        const state = useStore.getState()
-        const payload = await buildPastePayload(state)
-        if (!payload) return
-        try {
-          const kind = await writePayloadToClipboard(payload)
-          await window.inkcopy.log.info('paste', 'wrote clipboard', {
-            kind,
-            chars: payload.text.length,
-            files: payload.files.length,
-            label: payload.toastLabel,
-          })
-        } catch (err) {
-          showToast({ message: `เขียน clipboard ไม่ได้: ${(err as Error).message}`, tone: 'error', durationMs: 4000 })
-          return
-        }
-        showToast({
-          message: `วาง: ${state.promptFiles.length} Prompt + ${payload.toastLabel}`,
-          tone: 'paste',
-          durationMs: 1800,
-        })
-        advanceChapter(payload.chapterCount)
-      })()
+      const state = useStore.getState()
+      if (state.paused || state.mode !== 'paste') return
+      if (!state.chapterFiles.length || state.currentIndex >= state.chapterFiles.length) return
+      const remaining = state.chapterFiles.length - state.currentIndex
+      const toPaste = Math.min(state.concurrentChapters, remaining)
+      const first = state.chapterFiles[state.currentIndex]
+      const last = toPaste > 1 ? state.chapterFiles[state.currentIndex + toPaste - 1] : null
+      const trim = (n: string) => n.replace(/\.[^.]+$/, '')
+      const label = last ? `${trim(first.displayName)} … ${trim(last.displayName)}` : trim(first.displayName)
+      showToast({
+        message: `วาง: ${state.promptFiles.length} Prompt + ${label}`,
+        tone: 'paste',
+        durationMs: 1800,
+      })
+      advanceChapter(toPaste)
     })
     const offPrev = window.inkcopy?.hotkey?.onPrev?.(() => {
       const { currentIndex } = useStore.getState()
@@ -104,6 +102,91 @@ export default function App() {
     return () => off?.()
   }, [])
 
+  // Clipboard pre-load — keep the OS clipboard armed with the upcoming
+  // chapter's payload so the user's Cmd+V pastes immediately. Mirrors
+  // `_load_clipboard_paste_mode()` being called after every advance in
+  // inkcopy.py. Without this, the renderer writes the clipboard AFTER the
+  // user's Cmd+V was already consumed by the OS → user gets nothing.
+  //
+  // We subscribe once and write only when the relevant payload-shape fields
+  // change (skipping cosmetic store updates like toast/diagnostics polls).
+  useEffect(() => {
+    if (!hydrated) return
+    let cancelled = false
+    let inFlight = false
+    let pendingKey = ''
+    let lastWritten = ''
+
+    const fieldsKey = () => {
+      const s = useStore.getState()
+      return JSON.stringify({
+        registered: s.hotkeysRegistered,
+        paused: s.paused,
+        mode: s.mode,
+        ci: s.currentIndex,
+        cc: s.concurrentChapters,
+        cas: s.chapterPasteAsText,
+        ip: s.includePrompt,
+        ic: s.includeChapter,
+        pp: s.promptPasteModes,
+        pf: s.promptFiles.map((f) => f.path),
+        cf: s.chapterFiles.map((f) => f.path),
+      })
+    }
+
+    const writeIfNeeded = async () => {
+      if (cancelled || inFlight) return
+      const key = pendingKey || fieldsKey()
+      pendingKey = ''
+      if (key === lastWritten) return
+      const state = useStore.getState()
+      if (
+        !state.hotkeysRegistered ||
+        state.paused ||
+        state.mode !== 'paste' ||
+        !state.chapterFiles.length ||
+        state.currentIndex >= state.chapterFiles.length
+      ) {
+        lastWritten = key
+        return
+      }
+      inFlight = true
+      try {
+        const payload = await buildPastePayload(state)
+        if (cancelled || !payload) return
+        await writePayloadToClipboard(payload)
+        lastWritten = key
+        await window.inkcopy.log.info('paste', 'pre-loaded clipboard', {
+          chars: payload.text.length,
+          files: payload.files.length,
+          label: payload.toastLabel,
+        })
+      } catch (err) {
+        useStore.getState().showToast({
+          message: `เตรียม clipboard ไม่ได้: ${(err as Error).message}`,
+          tone: 'error',
+          durationMs: 4000,
+        })
+      } finally {
+        inFlight = false
+        // Drain — handle any state changes that arrived while writing.
+        if (!cancelled && pendingKey && pendingKey !== lastWritten) void writeIfNeeded()
+      }
+    }
+
+    void writeIfNeeded()
+    const unsub = useStore.subscribe(() => {
+      const next = fieldsKey()
+      if (next === lastWritten) return
+      pendingKey = next
+      if (!inFlight) void writeIfNeeded()
+    })
+    return () => {
+      cancelled = true
+      unsub()
+    }
+  }, [hydrated])
+
   // Auto-register / unregister hotkeys based on folder state — matches
   // inkcopy.py's behavior where the hotkey listener attaches as soon as both
   // folders are picked. Avoids forcing the user through an extra button click
@@ -131,7 +214,11 @@ export default function App() {
       {minimized ? (
         <MinimizedStatus />
       ) : (
-        <main className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3" data-testid="content">
+        // overflow-hidden + min-h-0 are load-bearing: they bound the flex
+        // children so ChapterSection's flex-1 list can become the actual
+        // scroll container (otherwise the list grows past its border and
+        // visually overlaps ConcurrentRow / ActionRow below it).
+        <main className="flex flex-1 min-h-0 flex-col gap-2.5 overflow-hidden p-3" data-testid="content">
           <ModeToggle />
           <StatusBar />
           <DiagnosticsRow />
