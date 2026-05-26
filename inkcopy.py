@@ -60,7 +60,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
@@ -476,6 +476,50 @@ else:
 
 
 # ---------------------------------------------------------------------------
+# macOS clipboard helpers
+#   Qt's QMimeData.setUrls() works in most cases, but Chrome/Gemini sometimes
+#   ignores Qt-written file URLs because Qt6 still writes the legacy
+#   NSURLPboardType. Writing NSURL objects via NSPasteboard.writeObjects_()
+#   produces "public.file-url" entries that every macOS browser recognises.
+# ---------------------------------------------------------------------------
+def _set_macos_clipboard_files(paths: list[str]) -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        from AppKit import NSPasteboard, NSURL
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        urls = []
+        for p in paths:
+            if os.path.exists(p):
+                urls.append(NSURL.fileURLWithPath_(p))
+            else:
+                _log(f"NSPasteboard skip missing file: {p}", "WARN")
+        if not urls:
+            return False
+        ok = bool(pb.writeObjects_(urls))
+        _log(f"NSPasteboard wrote {len(urls)} file URL(s) (ok={ok})")
+        return ok
+    except Exception as exc:
+        _log(f"NSPasteboard file write failed: {exc}", "ERROR")
+        return False
+
+
+def _set_macos_clipboard_text(text: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSPasteboardTypeString)
+        return True
+    except Exception as exc:
+        _log(f"NSPasteboard text write failed: {exc}", "ERROR")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Cross-platform hotkey backend
 #   Windows: `keyboard` library (low-latency Win32 hooks; existing behavior).
 #   macOS / Linux: `pynput` (works with Quartz on macOS — needs Accessibility).
@@ -713,7 +757,149 @@ else:
                 _log(f"send_paste error: {exc}", "ERROR")
                 return False
 
-    _hotkey_backend: _HotkeyBackend = _PynputBackend()
+    if sys.platform == "darwin":
+        # pynput's listener runs in a background thread and calls
+        # TSMGetInputSourceProperty (a main-thread-only macOS API). On Sonoma+
+        # this trips libdispatch's queue assertion and tears down the whole
+        # process — typically right after AppKit refreshes input sources (e.g.
+        # when an NSOpenPanel opens). The same race also causes Cmd+V to be
+        # missed silently before the crash.
+        #
+        # Replace it with an AppKit global event monitor: AppKit dispatches the
+        # handler on the main thread, observes key events in OTHER apps (which
+        # is exactly our use case — INKCOPY is a background overlay), and
+        # never touches TSM from a worker thread.
+        try:
+            from AppKit import NSEvent  # type: ignore
+            _NSEVENT_AVAILABLE = True
+        except Exception as _exc:
+            _log(f"AppKit import failed, falling back to pynput: {_exc}", "WARN")
+            _NSEVENT_AVAILABLE = False
+
+        # NSEvent mask for keyDown — explicit value keeps this independent of
+        # PyObjC enum versions.
+        _NS_EVENT_MASK_KEY_DOWN = 1 << 10
+        _NS_CMD_KEY_MASK = 1 << 20  # NSEventModifierFlagCommand
+
+        # Carbon virtual keycodes (Events.h).
+        _MAC_KC_V = 9
+        _MAC_KC_F9 = 101
+        _MAC_KC_F10 = 109
+        _MAC_KC_F12 = 111
+
+        class _MacNSEventBackend(_HotkeyBackend):
+            def __init__(self):
+                self._monitor = None
+                # Live cmd-held state is queried from NSEvent.modifierFlags(),
+                # which always reflects the actual hardware state.
+                self._controller = _pynkb.Controller()
+                self._on_paste = None
+                self._on_prev = None
+                self._on_next = None
+                self._on_pause = None
+                self.stats = {
+                    "keys_received": 0,
+                    "v_keys_seen": 0,
+                    "modifier_events": 0,
+                    "paste_fires": 0,
+                    "prev_fires": 0,
+                    "next_fires": 0,
+                    "pause_fires": 0,
+                    "last_key_repr": "",
+                    "last_error": "",
+                    "listener_started": False,
+                }
+
+            def register(self, on_paste, on_prev, on_next, on_pause):
+                if self._monitor is not None:
+                    return
+                self._on_paste = on_paste
+                self._on_prev = on_prev
+                self._on_next = on_next
+                self._on_pause = on_pause
+                if not _NSEVENT_AVAILABLE:
+                    self.stats["last_error"] = "AppKit unavailable"
+                    _log("AppKit/NSEvent unavailable — hotkeys disabled", "ERROR")
+                    return
+                try:
+                    self._monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                        _NS_EVENT_MASK_KEY_DOWN, self._handle_key_event
+                    )
+                    self.stats["listener_started"] = self._monitor is not None
+                    _log(f"NSEvent global monitor started (handle={self._monitor})")
+                except Exception as exc:
+                    import traceback
+                    self.stats["last_error"] = f"register: {exc}"
+                    _log(f"NSEvent monitor FAILED: {exc}\n{traceback.format_exc()}", "ERROR")
+                    self._monitor = None
+
+            def _handle_key_event(self, event):
+                try:
+                    self.stats["keys_received"] += 1
+                    kc = int(event.keyCode())
+                    cmd_held = bool(int(event.modifierFlags()) & _NS_CMD_KEY_MASK)
+                    self.stats["last_key_repr"] = f"kc={kc} cmd={cmd_held}"
+
+                    if kc == _MAC_KC_V:
+                        self.stats["v_keys_seen"] += 1
+                        if cmd_held:
+                            self.stats["paste_fires"] += 1
+                            _log("Cmd+V → paste fire (NSEvent)")
+                            if self._on_paste is not None:
+                                self._on_paste()
+                    elif kc == _MAC_KC_F9 and self._on_prev is not None:
+                        self.stats["prev_fires"] += 1
+                        _log("F9 → prev (NSEvent)")
+                        self._on_prev()
+                    elif kc == _MAC_KC_F10 and self._on_next is not None:
+                        self.stats["next_fires"] += 1
+                        _log("F10 → next (NSEvent)")
+                        self._on_next()
+                    elif kc == _MAC_KC_F12 and self._on_pause is not None:
+                        self.stats["pause_fires"] += 1
+                        _log("F12 → pause (NSEvent)")
+                        self._on_pause()
+                except Exception as exc:
+                    self.stats["last_error"] = f"handle: {exc}"
+                    _log(f"NSEvent handler error: {exc}", "ERROR")
+
+            def unregister(self):
+                if self._monitor is not None:
+                    try:
+                        NSEvent.removeMonitor_(self._monitor)
+                    except Exception:
+                        pass
+                    self._monitor = None
+                self.stats["listener_started"] = False
+
+            def is_alive(self) -> bool:
+                return self._monitor is not None
+
+            def is_paste_modifier_held(self) -> bool:
+                if not _NSEVENT_AVAILABLE:
+                    return False
+                try:
+                    return bool(int(NSEvent.modifierFlags()) & _NS_CMD_KEY_MASK)
+                except Exception:
+                    return False
+
+            def send_paste(self) -> bool:
+                # pynput Controller is safe here: send_paste is invoked from
+                # the Qt main thread via QTimer.singleShot, not from a worker.
+                try:
+                    with self._controller.pressed(_pynkb.Key.cmd):
+                        self._controller.press("v")
+                        self._controller.release("v")
+                    return True
+                except Exception as exc:
+                    _log(f"send_paste error: {exc}", "ERROR")
+                    return False
+
+        _hotkey_backend: _HotkeyBackend = (
+            _MacNSEventBackend() if _NSEVENT_AVAILABLE else _PynputBackend()
+        )
+    else:
+        _hotkey_backend: _HotkeyBackend = _PynputBackend()
 
 
 # ---------------------------------------------------------------------------
@@ -2235,7 +2421,9 @@ class SmartClipboardOverlay(QWidget):
     @staticmethod
     def _read_local_file_as_text(path: str, label: str) -> str:
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            # utf-8-sig handles both BOM-prefixed (Windows Notepad) and plain
+            # UTF-8 files transparently — Thai text stays intact either way.
+            with open(path, "r", encoding="utf-8-sig") as f:
                 return f.read()
         except OSError:
             return f"[อ่านไฟล์ไม่ได้: {label}]"
@@ -2325,7 +2513,8 @@ class SmartClipboardOverlay(QWidget):
         
         # Count existing entries if file exists
         if os.path.isfile(self.vocab_file_path):
-            with open(self.vocab_file_path, "r", encoding="utf-8") as f:
+            # utf-8-sig transparently strips BOM if present (from prior writes).
+            with open(self.vocab_file_path, "r", encoding="utf-8-sig") as f:
                 content = f.read()
                 # Count non-empty blocks separated by blank lines
                 blocks = [b.strip() for b in content.split("\n\n") if b.strip()]
@@ -2431,8 +2620,11 @@ class SmartClipboardOverlay(QWidget):
             content = f"{text}\n"
 
         out_path = os.path.join(self.output_folder, out_name)
-        with open(out_path, "w", encoding="utf-8") as f:
+        # utf-8-sig writes a BOM so macOS TextEdit / Pages don't misdetect
+        # Thai text as MacRoman / Western when opening the .txt later.
+        with open(out_path, "w", encoding="utf-8-sig") as f:
             f.write(content)
+        _log(f"Copy mode saved: {out_path} ({len(content)} chars, utf-8-sig)")
 
         end_slot = self.current_index + chapters_in_round
         ch_label = self._ch_range_label(self.current_index, end_slot - 1)
@@ -2465,12 +2657,22 @@ class SmartClipboardOverlay(QWidget):
         if not text or not text.strip():
             return
 
-        # Append to vocab.txt
-        with open(self.vocab_file_path, "a", encoding="utf-8") as f:
+        # Append to vocab.txt — write BOM only when creating an empty/new file
+        # so macOS apps detect UTF-8 instead of falling back to MacRoman.
+        file_has_content = (
+            os.path.isfile(self.vocab_file_path)
+            and os.path.getsize(self.vocab_file_path) > 0
+        )
+        encoding = "utf-8" if file_has_content else "utf-8-sig"
+        with open(self.vocab_file_path, "a", encoding=encoding) as f:
             if self.vocab_entry_count > 0:
                 # Add blank line separator before new entry
                 f.write("\n\n")
             f.write(text.strip())
+        _log(
+            f"Vocab appended: entry #{self.vocab_entry_count + 1} "
+            f"({len(text.strip())} chars, encoding={encoding})"
+        )
         
         self.vocab_entry_count += 1
         
@@ -2526,21 +2728,33 @@ class SmartClipboardOverlay(QWidget):
 
         has_text = any(kind == "text" for kind, _ in ordered_parts)
         has_file = any(kind == "file" for kind, _ in ordered_parts)
+        file_paths = [p for k, p in ordered_parts if k == "file"]
+        text_combined = "\n\n".join(p for k, p in ordered_parts if k == "text")
 
         # แอปเว็บมักรับแค่ไฟล์ถ้ามีทั้ง URL และ text ในคลิปบอร์ดชุดเดียว — แยกหลายรอบ:
         # Ctrl+V คุณ = text | โปรแกรม Ctrl+V = ไฟล์ | โปรแกรม Ctrl+V = text อีกครั้ง (ลำดับในแชท) → สลับตอน
         if has_text and has_file:
-            combined = "\n\n".join(p for k, p in ordered_parts if k == "text")
-            mime.setText(combined)
-            self._staged_pending_file_paths = [p for k, p in ordered_parts if k == "file"]
-            self._staged_plain_text_for_repeat = combined
+            mime.setText(text_combined)
+            clipboard.setMimeData(mime)
+            self._staged_pending_file_paths = file_paths
+            self._staged_plain_text_for_repeat = text_combined
+            _log(f"Paste mode (mixed): text={len(text_combined)} chars, files={len(file_paths)} staged")
         elif has_text:
-            mime.setText("\n\n".join(p for k, p in ordered_parts if k == "text"))
+            mime.setText(text_combined)
+            clipboard.setMimeData(mime)
+            _log(f"Paste mode (text-only): {len(text_combined)} chars")
         elif has_file:
-            mime.setUrls([QUrl.fromLocalFile(p) for k, p in ordered_parts if k == "file"])
+            # On macOS the native NSPasteboard path is more reliable for
+            # browsers (Chrome / Gemini / ChatGPT) — fall back to Qt only if
+            # the AppKit write fails or we're on Windows / Linux.
+            wrote_native = _set_macos_clipboard_files(file_paths)
+            if not wrote_native:
+                mime.setUrls([QUrl.fromLocalFile(p) for p in file_paths])
+                clipboard.setMimeData(mime)
+            _log(f"Paste mode (file-only): {len(file_paths)} files, native={wrote_native}")
         else:
             mime.setText("")
-        clipboard.setMimeData(mime)
+            clipboard.setMimeData(mime)
 
         QTimer.singleShot(100, self._reset_ignore_flag)
         self._update_status()
@@ -2622,10 +2836,16 @@ class SmartClipboardOverlay(QWidget):
     def _run_staged_file_paste_then_finish(self, paths: list[str]):
         """หลังคุณ Ctrl+V วางข้อความแล้ว — ตั้งคลิปบอร์ดเป็นไฟล์แล้ว Ctrl+V สังเคราะห์."""
         self._ignore_clipboard_change = True
-        mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
-        QApplication.clipboard().setMimeData(mime)
+        # Prefer NSPasteboard on macOS (browsers ignore Qt's legacy file URL
+        # format on some macOS versions). Fall back to Qt elsewhere or if the
+        # native write fails.
+        wrote_native = _set_macos_clipboard_files(paths)
+        if not wrote_native:
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+            QApplication.clipboard().setMimeData(mime)
         QApplication.processEvents()
+        _log(f"Staged file paste: {len(paths)} files queued (native={wrote_native})")
         ms = max(40, min(self.staged_ms_clipboard_to_ctrl_v, 3000))
         QTimer.singleShot(ms, lambda: self._staged_send_synthetic_ctrl_v(self._staged_after_file_paste_prepare_text))
 
