@@ -60,7 +60,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
@@ -107,6 +107,71 @@ def _resource_path(rel: str) -> str:
 CONFIG_DIR = _config_dir()
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 ICON_PATH = _resource_path("inkcopy.ico")
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic logger — writes to a per-user log file users can share when
+# Mac/Windows hotkeys "look granted" but Cmd+V / Ctrl+V silently fails to fire.
+# Path: ~/Library/Logs/INKCOPY/inkcopy.log (Mac) | %APPDATA%\INKCOPY\inkcopy.log (Win)
+# Rotates by truncating to last half when it exceeds _LOG_MAX_BYTES.
+# ---------------------------------------------------------------------------
+def _log_dir() -> str:
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Logs/INKCOPY")
+    return CONFIG_DIR
+
+
+LOG_PATH = os.path.join(_log_dir(), "inkcopy.log")
+_LOG_MAX_BYTES = 1_000_000
+
+
+def _log(msg: str, level: str = "INFO") -> None:
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        try:
+            if os.path.isfile(LOG_PATH) and os.path.getsize(LOG_PATH) > _LOG_MAX_BYTES:
+                with open(LOG_PATH, "rb") as fh:
+                    fh.seek(-(_LOG_MAX_BYTES // 2), 2)
+                    tail = fh.read()
+                with open(LOG_PATH, "wb") as fh:
+                    fh.write(tail)
+        except OSError:
+            pass
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(f"[{ts}] [{level}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _macos_accessibility_trusted() -> bool | None:
+    """
+    Returns True/False on macOS based on the live TCC check; None on other OSes
+    or if the check cannot be performed (no ApplicationServices framework).
+    The toggle in System Settings can show "ON" while the underlying TCC entry
+    rejects the binary — this calls into AXIsProcessTrusted to see the real state.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+        lib_path = ctypes.util.find_library("ApplicationServices")
+        if not lib_path:
+            return None
+        lib = ctypes.cdll.LoadLibrary(lib_path)
+        lib.AXIsProcessTrusted.restype = ctypes.c_int
+        lib.AXIsProcessTrusted.argtypes = []
+        return bool(lib.AXIsProcessTrusted())
+    except Exception:
+        return None
+
+
+_log(f"==== INKCOPY {__version__} starting on {sys.platform} ====")
+_log(f"frozen={getattr(sys, 'frozen', False)} executable={sys.executable}")
+_log(f"config={CONFIG_PATH}")
+_log(f"log={LOG_PATH}")
 
 
 # ---------------------------------------------------------------------------
@@ -434,19 +499,44 @@ if sys.platform == "win32":
         def __init__(self):
             self._registered = False
             self._on_paste = None
+            self.stats = {
+                "keys_received": 0,
+                "v_keys_seen": 0,
+                "modifier_events": 0,
+                "paste_fires": 0,
+                "prev_fires": 0,
+                "next_fires": 0,
+                "pause_fires": 0,
+                "last_key_repr": "",
+                "last_error": "",
+                "listener_started": False,
+            }
 
         def register(self, on_paste, on_prev, on_next, on_pause):
             if self._registered:
                 return
-            self._registered = True
             self._on_paste = on_paste
-            _kb_lib.on_press_key("v", self._handle_v, suppress=False)
-            _kb_lib.add_hotkey("f9", on_prev)
-            _kb_lib.add_hotkey("f10", on_next)
-            _kb_lib.add_hotkey("f12", on_pause)
+            try:
+                _kb_lib.on_press_key("v", self._handle_v, suppress=False)
+                _kb_lib.add_hotkey("f9", lambda: (self.stats.__setitem__("prev_fires", self.stats["prev_fires"] + 1), _log("F9 → prev"), on_prev()))
+                _kb_lib.add_hotkey("f10", lambda: (self.stats.__setitem__("next_fires", self.stats["next_fires"] + 1), _log("F10 → next"), on_next()))
+                _kb_lib.add_hotkey("f12", lambda: (self.stats.__setitem__("pause_fires", self.stats["pause_fires"] + 1), _log("F12 → pause"), on_pause()))
+                self._registered = True
+                self.stats["listener_started"] = True
+                _log("keyboard hooks installed")
+            except Exception as exc:
+                import traceback
+                self.stats["last_error"] = f"register: {exc}"
+                _log(f"keyboard register FAILED: {exc}\n{traceback.format_exc()}", "ERROR")
 
         def _handle_v(self, _event):
-            if self._on_paste is not None and self.is_paste_modifier_held():
+            self.stats["keys_received"] += 1
+            self.stats["v_keys_seen"] += 1
+            held = self.is_paste_modifier_held()
+            if held:
+                self.stats["paste_fires"] += 1
+                _log("Ctrl+V → paste fire")
+            if self._on_paste is not None and held:
                 self._on_paste()
 
         def unregister(self):
@@ -455,12 +545,17 @@ if sys.platform == "win32":
             except Exception:
                 pass
             self._registered = False
+            self.stats["listener_started"] = False
+
+        def is_alive(self) -> bool:
+            return self._registered
 
         def send_paste(self) -> bool:
             try:
                 _kb_lib.send("ctrl+v")
                 return True
-            except Exception:
+            except Exception as exc:
+                _log(f"send_paste error: {exc}", "ERROR")
                 return False
 
         def is_paste_modifier_held(self) -> bool:
@@ -487,6 +582,19 @@ else:
             self._on_prev = None
             self._on_next = None
             self._on_pause = None
+            # Diagnostics counters — surfaced in the Diagnostics row + log.
+            self.stats = {
+                "keys_received": 0,
+                "v_keys_seen": 0,
+                "modifier_events": 0,
+                "paste_fires": 0,
+                "prev_fires": 0,
+                "next_fires": 0,
+                "pause_fires": 0,
+                "last_key_repr": "",
+                "last_error": "",
+                "listener_started": False,
+            }
 
         def register(self, on_paste, on_prev, on_next, on_pause):
             if self._listener is not None:
@@ -495,12 +603,20 @@ else:
             self._on_prev = on_prev
             self._on_next = on_next
             self._on_pause = on_pause
-            self._listener = _pynkb.Listener(
-                on_press=self._on_key_press,
-                on_release=self._on_key_release,
-            )
-            self._listener.daemon = True
-            self._listener.start()
+            try:
+                self._listener = _pynkb.Listener(
+                    on_press=self._on_key_press,
+                    on_release=self._on_key_release,
+                )
+                self._listener.daemon = True
+                self._listener.start()
+                self.stats["listener_started"] = True
+                _log("pynput Listener started")
+            except Exception as exc:
+                import traceback
+                self.stats["last_error"] = f"start: {exc}"
+                _log(f"pynput Listener start FAILED: {exc}\n{traceback.format_exc()}", "ERROR")
+                self._listener = None
 
         def unregister(self):
             if self._listener is not None:
@@ -510,6 +626,10 @@ else:
                     pass
                 self._listener = None
             self._mods.clear()
+            self.stats["listener_started"] = False
+
+        def is_alive(self) -> bool:
+            return self._listener is not None and self._listener.is_alive()
 
         def _mod_name(self, key) -> str | None:
             if key in (_pynkb.Key.cmd, _pynkb.Key.cmd_l, _pynkb.Key.cmd_r):
@@ -527,25 +647,51 @@ else:
                 return True
             return False
 
+        def _key_repr_for_log(self, key) -> str:
+            """Compact repr — never logs raw char (privacy). Only flags + vk."""
+            vk = getattr(key, "vk", None)
+            has_char = getattr(key, "char", None) is not None
+            name = getattr(key, "name", None)
+            if name:
+                return f"Key.{name}"
+            return f"KeyCode(vk={vk}, has_char={has_char})"
+
         def _on_key_press(self, key):
             try:
+                self.stats["keys_received"] += 1
+                self.stats["last_key_repr"] = self._key_repr_for_log(key)
                 mod = self._mod_name(key)
                 if mod is not None:
                     self._mods.add(mod)
+                    self.stats["modifier_events"] += 1
+                    _log(f"mod down: {mod} (held now: {sorted(self._mods)})")
                     return
                 if key == _pynkb.Key.f9 and self._on_prev:
+                    self.stats["prev_fires"] += 1
+                    _log("F9 → prev")
                     self._on_prev()
                     return
                 if key == _pynkb.Key.f10 and self._on_next:
+                    self.stats["next_fires"] += 1
+                    _log("F10 → next")
                     self._on_next()
                     return
                 if key == _pynkb.Key.f12 and self._on_pause:
+                    self.stats["pause_fires"] += 1
+                    _log("F12 → pause")
                     self._on_pause()
                     return
-                if self._is_v_key(key) and self.is_paste_modifier_held() and self._on_paste:
-                    self._on_paste()
-            except Exception:
-                pass
+                if self._is_v_key(key):
+                    self.stats["v_keys_seen"] += 1
+                    held = self.is_paste_modifier_held()
+                    _log(f"V key seen — paste_mod_held={held} mods={sorted(self._mods)} repr={self.stats['last_key_repr']}")
+                    if held and self._on_paste:
+                        self.stats["paste_fires"] += 1
+                        _log("Cmd/Ctrl+V → paste fire")
+                        self._on_paste()
+            except Exception as exc:
+                self.stats["last_error"] = f"on_press: {exc}"
+                _log(f"on_press error: {exc}", "ERROR")
 
         def _on_key_release(self, key):
             mod = self._mod_name(key)
@@ -563,7 +709,8 @@ else:
                     self._controller.press("v")
                     self._controller.release("v")
                 return True
-            except Exception:
+            except Exception as exc:
+                _log(f"send_paste error: {exc}", "ERROR")
                 return False
 
     _hotkey_backend: _HotkeyBackend = _PynputBackend()
@@ -681,7 +828,12 @@ class SmartClipboardOverlay(QWidget):
 
         # ---- update check (background, non-blocking) -------------------------
         self._update_url = None
+        self._update_tag = None
+        self._update_artifact_url = None
         self._start_update_check()
+
+        # ---- diagnostics tick (hotkey health + permission) --------------------
+        self._start_diagnostics()
 
     # ============================================================ Update check
     def _start_update_check(self):
@@ -702,23 +854,184 @@ class SmartClipboardOverlay(QWidget):
                 tag = (data.get("tag_name") or "").strip()
                 url = (data.get("html_url") or "").strip()
                 if tag and _is_newer_version(tag, __version__):
+                    # Pick the artifact that matches this platform so the in-app
+                    # updater can install without bouncing through a browser.
+                    self._update_artifact_url = self._pick_release_artifact(data)
+                    _log(f"Update available: {tag} (artifact={self._update_artifact_url or 'none'})")
                     self.signals.update_available.emit(tag, url)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f"Update check failed: {exc}", "WARN")
 
         threading.Thread(target=_run, daemon=True).start()
 
+    def _pick_release_artifact(self, release_data: dict) -> str | None:
+        """
+        From a /releases/latest payload, return the best download URL for this OS:
+          • Windows: prefer INKCOPY-Setup-*.exe (NSIS installer — auto-replaces in place).
+                     Fallback to portable INKCOPY.exe.
+          • macOS:   prefer INKCOPY-v*.dmg. Fallback to .zip.
+        Returns None if no suitable artifact found.
+        """
+        assets = release_data.get("assets") or []
+        if not isinstance(assets, list):
+            return None
+
+        def _match(predicate):
+            for a in assets:
+                name = (a.get("name") or "").lower()
+                if predicate(name):
+                    return a.get("browser_download_url")
+            return None
+
+        if sys.platform == "win32":
+            return (
+                _match(lambda n: n.startswith("inkcopy-setup") and n.endswith(".exe"))
+                or _match(lambda n: n == "inkcopy.exe")
+                or _match(lambda n: n.endswith(".exe"))
+            )
+        if sys.platform == "darwin":
+            return (
+                _match(lambda n: n.startswith("inkcopy") and n.endswith(".dmg"))
+                or _match(lambda n: n.endswith(".dmg"))
+                or _match(lambda n: n.endswith(".zip"))
+            )
+        return None
+
     def _on_update_available(self, tag: str, url: str):
         self._update_url = url
+        self._update_tag = tag
         self.update_btn.setText(f"⬆ {tag}")
-        self.update_btn.setToolTip(f"New version {tag} available — click to download")
+        self.update_btn.setToolTip(f"New version {tag} available — click to install")
         self.update_btn.setVisible(True)
         self.adjustSize()
 
     def _open_update(self):
-        if self._update_url:
-            import webbrowser
-            webbrowser.open(self._update_url)
+        """
+        Show a 3-option dialog: Install Now (silent download+install), Open Browser, Cancel.
+        Install Now is only enabled when we matched a platform-specific artifact.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+
+        tag = getattr(self, "_update_tag", None) or "new version"
+        artifact = getattr(self, "_update_artifact_url", None)
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle(f"INKCOPY {tag} available")
+        body = f"A new version of INKCOPY ({tag}) is available.\nCurrent version: {__version__}\n\n"
+        if artifact:
+            body += "Install now will download and run the installer."
+        else:
+            body += "No matching installer for this platform — opening the browser is your only option."
+        msg.setText(body)
+        msg.setIcon(QMessageBox.Icon.Information)
+
+        install_btn = None
+        if artifact:
+            install_btn = msg.addButton("Install Now", QMessageBox.ButtonRole.AcceptRole)
+        browser_btn = msg.addButton("Open Browser", QMessageBox.ButtonRole.ActionRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(install_btn or browser_btn)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if install_btn is not None and clicked is install_btn:
+            self._install_update(artifact)
+        elif clicked is browser_btn:
+            if self._update_url:
+                import webbrowser
+                webbrowser.open(self._update_url)
+
+    def _install_update(self, artifact_url: str):
+        """
+        Download artifact_url to a temp file with progress UI, then:
+          • Windows: spawn `installer.exe /S` (silent) — NSIS kills running INKCOPY,
+            replaces binary, relaunches via Finish-page action. We then quit.
+          • macOS: open the .dmg in Finder so the user drags the new .app to
+            /Applications (replacing a *running* bundle in place is unsafe — we
+            don't attempt it). We then quit.
+        Both flows log every step to LOG_PATH for postmortem.
+        """
+        from PyQt6.QtWidgets import QProgressDialog, QMessageBox
+        import tempfile
+        import urllib.request
+
+        _log(f"Update install requested: {artifact_url}")
+
+        suffix = ".exe" if sys.platform == "win32" else (".dmg" if sys.platform == "darwin" else ".bin")
+        fd, tmp_path = tempfile.mkstemp(prefix="inkcopy-update-", suffix=suffix)
+        os.close(fd)
+
+        progress = QProgressDialog("Downloading update…", "Cancel", 0, 100, self)
+        progress.setWindowTitle("INKCOPY Update")
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setValue(0)
+        progress.show()
+        QApplication.processEvents()
+
+        try:
+            req = urllib.request.Request(
+                artifact_url,
+                headers={"User-Agent": f"INKCOPY/{__version__}"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                total = int(resp.headers.get("Content-Length") or 0)
+                downloaded = 0
+                chunk = 64 * 1024
+                with open(tmp_path, "wb") as out:
+                    while True:
+                        if progress.wasCanceled():
+                            _log("Update download canceled by user")
+                            progress.close()
+                            try:
+                                os.remove(tmp_path)
+                            except OSError:
+                                pass
+                            return
+                        buf = resp.read(chunk)
+                        if not buf:
+                            break
+                        out.write(buf)
+                        downloaded += len(buf)
+                        if total:
+                            progress.setValue(int(downloaded * 100 / total))
+                        else:
+                            progress.setLabelText(f"Downloading… {downloaded // 1024} KB")
+                        QApplication.processEvents()
+            progress.setValue(100)
+            progress.close()
+            _log(f"Update downloaded ({downloaded} bytes) → {tmp_path}")
+        except Exception as exc:
+            progress.close()
+            _log(f"Update download FAILED: {exc}", "ERROR")
+            QMessageBox.critical(self, "Update failed", f"Could not download update:\n{exc}")
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return
+
+        try:
+            import subprocess
+            if sys.platform == "win32":
+                # /S = silent install (no UI). NSIS installer kills running INKCOPY,
+                # replaces the .exe, and re-launches via MUI_FINISHPAGE_RUN.
+                _log(f"Spawning Windows installer: {tmp_path} /S")
+                subprocess.Popen([tmp_path, "/S"], close_fds=True, **_subprocess_no_window_kwargs())
+            elif sys.platform == "darwin":
+                _log(f"Opening DMG in Finder: {tmp_path}")
+                subprocess.Popen(["open", tmp_path])
+            else:
+                _log(f"Linux update: revealing {tmp_path}")
+                subprocess.Popen(["xdg-open", os.path.dirname(tmp_path)])
+        except Exception as exc:
+            _log(f"Launch installer FAILED: {exc}", "ERROR")
+            QMessageBox.critical(self, "Update failed", f"Could not launch installer:\n{exc}")
+            return
+
+        # Quit ourselves so the installer can replace the binary (Windows) /
+        # so the user can drag the new .app into place (Mac).
+        QTimer.singleShot(500, self._quit)
 
     # ==================================================================== UI
     def _build_ui(self):
@@ -767,6 +1080,21 @@ class SmartClipboardOverlay(QWidget):
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
+
+        # -- diagnostics row (hotkey health + permission + open log)
+        diag_row = QHBoxLayout()
+        self.diag_label = QLabel("Hotkey: …")
+        self.diag_label.setObjectName("diagLabel")
+        self.diag_label.setWordWrap(True)
+        self.open_log_btn = QPushButton("🔍 Open Log")
+        self.open_log_btn.setObjectName("controlBtn")
+        self.open_log_btn.setToolTip(f"Open log folder ({LOG_PATH})")
+        self.open_log_btn.clicked.connect(self._open_log_folder)
+        diag_row.addWidget(self.diag_label, 1)
+        diag_row.addWidget(self.open_log_btn)
+        self._row_diag = QWidget()
+        self._row_diag.setLayout(diag_row)
+        root.addWidget(self._row_diag)
 
         # Container for collapsible content
         self.content_widget = QWidget()
@@ -1118,6 +1446,14 @@ class SmartClipboardOverlay(QWidget):
             #info {
                 color: #aaaaaa;
                 font-size: 12px;
+            }
+            #diagLabel {
+                color: #cccccc;
+                font-size: 11px;
+                padding: 4px 8px;
+                background: rgba(255,255,255,0.04);
+                border-radius: 6px;
+                border: 1px solid rgba(255,255,255,0.08);
             }
             #legend {
                 font-size: 11px;
@@ -2454,6 +2790,90 @@ class SmartClipboardOverlay(QWidget):
             self.toast.close()
         self.toast = ToastNotification(message, action_type)
         self.toast.show()
+
+    # ============================================================ DIAGNOSTICS
+    def _start_diagnostics(self):
+        """Tick every 2s — refresh hotkey health label + auto-restart listener if dead."""
+        self._diag_timer = QTimer(self)
+        self._diag_timer.timeout.connect(self._diagnostics_tick)
+        self._diag_timer.start(2000)
+        self._diagnostics_tick()  # immediate first refresh
+
+    def _diagnostics_tick(self):
+        stats = getattr(_hotkey_backend, "stats", {}) or {}
+        alive = False
+        try:
+            alive = bool(_hotkey_backend.is_alive())
+        except Exception:
+            alive = False
+
+        # On Mac: re-query the live TCC trust (toggle ON ≠ TCC trusts the binary).
+        ax_trusted = _macos_accessibility_trusted()  # True / False / None
+
+        registered = self.hotkeys_registered
+        bits: list[str] = []
+
+        if sys.platform == "darwin":
+            if ax_trusted is False:
+                bits.append("🔴 Accessibility: NOT trusted (toggle may show ON but TCC rejects this binary — remove + re-add INKCOPY in System Settings → Privacy & Security → Accessibility, then Quit & reopen)")
+            elif ax_trusted is True:
+                bits.append("🟢 Accessibility: trusted")
+            else:
+                bits.append("🟡 Accessibility: unknown")
+
+        if not registered:
+            bits.append("⚪ Hotkeys not registered yet — set Prompt + Chapter folder first")
+        elif alive:
+            bits.append(
+                f"🟢 Hotkey listener: alive · keys={stats.get('keys_received', 0)} "
+                f"V={stats.get('v_keys_seen', 0)} pastes={stats.get('paste_fires', 0)} "
+                f"F10={stats.get('next_fires', 0)}"
+            )
+        else:
+            bits.append("🔴 Hotkey listener: DEAD — attempting restart")
+            _log("Listener dead — attempting restart", "WARN")
+            self._restart_hotkeys()
+
+        last_err = stats.get("last_error") or ""
+        if last_err:
+            bits.append(f"⚠ last error: {last_err}")
+
+        self.diag_label.setText("  ·  ".join(bits))
+
+    def _restart_hotkeys(self):
+        try:
+            _hotkey_backend.unregister()
+        except Exception:
+            pass
+        self.hotkeys_registered = False
+        try:
+            self._register_hotkeys()
+            _log("Listener restart attempt completed")
+        except Exception as exc:
+            _log(f"Listener restart FAILED: {exc}", "ERROR")
+
+    def _open_log_folder(self):
+        try:
+            os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        except OSError:
+            pass
+        # Make sure the log file exists so the OS reveal-in-folder doesn't fail.
+        if not os.path.isfile(LOG_PATH):
+            try:
+                with open(LOG_PATH, "a", encoding="utf-8"):
+                    pass
+            except OSError:
+                pass
+        try:
+            import subprocess
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", LOG_PATH])
+            elif sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", LOG_PATH])
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(LOG_PATH)])
+        except Exception as exc:
+            _log(f"open log folder failed: {exc}", "ERROR")
 
     # ============================================================ QUIT
     def _quit(self):

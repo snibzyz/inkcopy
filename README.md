@@ -32,15 +32,16 @@
 
 ### บนเครื่อง Mac
 
-1. ดาวน์โหลด **`INKCOPY.dmg`** จาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
+1. ดาวน์โหลด **`INKCOPY-v0.2.0.dmg`** จาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
 2. ดับเบิลคลิกเปิด → ลาก **`INKCOPY.app`** ไปยังโฟลเดอร์ Applications
 3. **ครั้งแรก**: คลิกขวาที่ไอคอน → **Open** → กด **Open** อีกครั้ง (ครั้งต่อไปดับเบิลคลิกได้ปกติ)
 4. **สำคัญมาก** — ให้สิทธิ์ Accessibility:
    - เปิด **System Settings** → **Privacy & Security** → **Accessibility**
    - กดเครื่องหมาย **+** เพิ่ม INKCOPY แล้วเปิดสวิตช์
-   - ถ้าไม่ให้สิทธิ์นี้ ปุ่มลัด F9/F10/F12 และ Cmd+V จะไม่ทำงาน
+   - **Quit แอป → เปิดใหม่** (สิทธิ์เพิ่งให้จะมีผลก็ต่อเมื่อเริ่มแอปใหม่)
+   - ในหน้าต่าง INKCOPY ดู **แถบ Hotkey ใต้สถานะ** — ถ้าเป็น 🟢 = ใช้ได้, ถ้า 🔴 = ดู [แก้ปัญหาที่พบบ่อย](#แก้ปัญหาที่พบบ่อย)
 
-> เมื่อมีเวอร์ชันใหม่ ปุ่มสีเขียว **⬆ vX.X.X** จะโผล่ที่มุมขวาบน — กดเพื่อเปิดหน้าโหลด
+> เมื่อมีเวอร์ชันใหม่ ปุ่มสีเขียว **⬆ vX.X.X** จะโผล่ที่มุมขวาบน — กดแล้วเลือก **Install Now** เพื่อโหลดและติดตั้งให้อัตโนมัติ (Windows: NSIS installer · Mac: เปิด .dmg ให้ลาก)
 
 ---
 
@@ -270,12 +271,26 @@ flowchart LR
 |---|---|
 | Windows ขึ้นแถบเตือนสีน้ำเงิน | กด **More info** → **Run anyway** (ครั้งแรกครั้งเดียว) |
 | Mac บอกว่าเปิดไม่ได้ / damaged | คลิกขวาที่ไอคอน → **Open** → **Open** (อย่าดับเบิลคลิก) |
-| **Mac: ปุ่มลัด F9/F10/Cmd+V ไม่ทำงาน** | เปิด **System Settings → Privacy & Security → Accessibility** แล้วเปิดสวิตช์ของ INKCOPY · ถ้าเพิ่งให้สิทธิ์ต้อง **ปิด-เปิดแอปใหม่** |
+| **Mac: Cmd+V ไม่ขยับตอน (แต่ปุ่ม Next ในแอปขยับได้)** | ดูแถบ Hotkey ใต้สถานะในแอป — ถ้าเห็น 🔴 **Accessibility: NOT trusted** = macOS เปิดสวิตช์ไว้แต่จริง ๆ ไม่ trust binary (เจอบ่อยหลังอัปเดต) **แก้: System Settings → Privacy & Security → Accessibility → กด `−` ลบ INKCOPY ออก → กด `+` เพิ่มใหม่ → เปิดสวิตช์ → Quit แอป (Right-click ที่ Dock → Quit) → เปิดใหม่** |
+| Mac: แถบ Hotkey เป็น 🔴 Listener DEAD | แอปจะลอง restart ให้เอง แต่ถ้ายังตาย → ดู log ผ่านปุ่ม **🔍 Open Log** ในแอป แล้วส่งให้เรา |
 | Windows: ปุ่มลัดไม่ตอบสนอง | บางโปรแกรม (เกม / Remote Desktop) ดักปุ่มลัดอยู่ ลองปิดก่อน หรือเปิด INKCOPY แบบ **Run as administrator** |
-| กด Ctrl+V แล้วไม่ไปตอนถัดไป | ตรวจว่ายังอยู่ในโหมด Paste และไม่ได้กด ⏸ Pause ค้างไว้ |
+| กด Ctrl+V แล้วไม่ไปตอนถัดไป | ตรวจว่ายังอยู่ในโหมด Paste และไม่ได้กด ⏸ Pause ค้างไว้ · ดูแถบ Hotkey ว่า 🟢 alive และ pastes เพิ่มขึ้นเมื่อกด Cmd+V |
 | คัดลอก (Ctrl+C) แล้วไม่บันทึก | ตรวจว่าอยู่ใน Copy/Vocab Mode และตั้ง Output Folder แล้ว |
 | ไฟล์ `.lnk` (ทางลัด Windows) ไม่ทำงาน | INKCOPY ใช้ PowerShell อ่านทางลัด — ตรวจว่า PowerShell ไม่ถูกบล็อก |
 | ตั้งค่าหายหลังเปิดใหม่ | ลองเช็คว่ามีสิทธิ์เขียน `%APPDATA%\INKCOPY\` (Win) หรือ `~/Library/Application Support/INKCOPY/` (Mac) |
+
+### Diagnostics + Log
+
+ตั้งแต่ v0.2.0 INKCOPY มี:
+
+- **แถบ Hotkey** ใต้สถานะหลัก — แสดงสุขภาพของ key listener real-time (🟢/🟡/🔴) + นับ keys / V keys / pastes ที่ตรวจจับได้
+- **ปุ่ม 🔍 Open Log** — เปิดโฟลเดอร์ log ในระบบ
+- **Log file**:
+  - macOS: `~/Library/Logs/INKCOPY/inkcopy.log`
+  - Windows: `%APPDATA%\INKCOPY\inkcopy.log`
+  - Linux: `~/.config/INKCOPY/inkcopy.log`
+
+ถ้าเจอปัญหา hotkey — เปิด log file → ดูบรรทัด `[ERROR]` หรือ `mod down` / `V key seen` ว่าระบบรับ event เข้ามาหรือไม่
 
 ---
 
