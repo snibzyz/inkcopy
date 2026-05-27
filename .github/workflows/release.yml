@@ -15,14 +15,14 @@ permissions:
   contents: write
 
 env:
-  # Resolve once so all jobs build the same revision.
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  build-windows:
+  python-windows:
+    name: Python Windows
     runs-on: windows-latest
     steps:
-      - name: Checkout (tag)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
@@ -38,33 +38,38 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
-      - name: Build portable INKCOPY.exe
+      - name: Build Python portable exe
         run: python -m PyInstaller --noconfirm --clean INKCOPY.spec
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 
-      - name: Build NSIS installer
+      - name: Build Python installer
         shell: pwsh
         run: |
           $ver = (Select-String -Path inkcopy.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          Write-Host "Building NSIS installer for version $ver"
           & "C:\Program Files (x86)\NSIS\makensis.exe" "/DAPP_VERSION=$ver" "scripts\installer.nsi"
           if ($LASTEXITCODE -ne 0) { throw "NSIS failed with exit code $LASTEXITCODE" }
-          Get-ChildItem dist
 
-      - name: Upload artifacts
+      - name: Create Python Windows zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item dist\INKCOPY.exe artifacts\INKCOPY-Python-Windows-${env:RELEASE_TAG}.exe
+          Copy-Item dist\INKCOPY-Setup-*.exe artifacts\
+          Compress-Archive -Path artifacts\INKCOPY-Python-Windows-${env:RELEASE_TAG}.exe -DestinationPath artifacts\INKCOPY-Python-Windows-${env:RELEASE_TAG}.zip -Force
+
+      - name: Upload Python Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-${{ env.RELEASE_TAG }}
-          path: |
-            dist/INKCOPY.exe
-            dist/INKCOPY-Setup-*.exe
+          name: python-windows-${{ env.RELEASE_TAG }}
+          path: artifacts/*
 
-  build-macos:
+  python-macos:
+    name: Python macOS
     runs-on: macos-latest
     steps:
-      - name: Checkout (tag)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
@@ -83,42 +88,135 @@ jobs:
       - name: Generate .icns
         run: bash scripts/build_icns.sh
 
-      - name: Build INKCOPY.app
+      - name: Build Python app
         run: python -m PyInstaller --noconfirm --clean INKCOPY.spec
 
-      - name: Package DMG (ad-hoc codesign + drag-to-Applications layout)
-        # --skip-build = reuse the .app we just built. The script itself ad-hoc
-        # codesigns the bundle (codesign --force --deep --sign -) which is what
-        # keeps macOS TCC entries stable across rebuilds — the root cause of
-        # the "toggle ON but Cmd+V silently fails" report on the previous build.
+      - name: Package Python DMG
         run: bash scripts/build_dmg.sh --skip-build
 
-      - name: Upload artifact
+      - name: Create Python macOS zip and source zip
+        run: |
+          set -e
+          chmod +x scripts/start-python-mac.command scripts/run.sh scripts/install.sh scripts/build.sh scripts/build_dmg.sh
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent dist/INKCOPY.app "artifacts/INKCOPY-Python-macOS-${RELEASE_TAG}.zip"
+          cp dist/INKCOPY-v*.dmg artifacts/
+          SRC="artifacts/source/INKCOPY-Python-Source-${RELEASE_TAG}"
+          mkdir -p "$SRC/assets" "$SRC/docs" "$SRC/scripts"
+          cp inkcopy.py requirements.txt README.md INKCOPY.spec "$SRC/"
+          cp "Start INKCOPY Python.command" "Start INKCOPY Python.bat" "$SRC/"
+          cp scripts/run.sh scripts/run.bat scripts/install.sh scripts/install.bat "$SRC/scripts/"
+          cp scripts/build.sh scripts/build.bat scripts/build_dmg.sh scripts/build_icns.sh scripts/build_nsis.bat scripts/installer.nsi "$SRC/scripts/"
+          cp assets/inkcopy.png assets/inkcopy.ico "$SRC/assets/"
+          cp docs/* "$SRC/docs/"
+          chmod +x "$SRC/Start INKCOPY Python.command" "$SRC/scripts/"*.sh
+          ditto -c -k "$SRC" "artifacts/INKCOPY-Python-Source-macOS-Windows-${RELEASE_TAG}.zip"
+
+      - name: Upload Python macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ env.RELEASE_TAG }}
-          path: dist/INKCOPY-v*.dmg
+          name: python-macos-${{ env.RELEASE_TAG }}
+          path: artifacts/*
+
+  electron-windows:
+    name: Electron Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Electron deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Electron Windows artifacts
+        run: pnpm --filter @inkcopy/desktop-shell package:win
+
+      - name: Stage Electron Windows artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item .app\shell\release\*.exe artifacts\
+          Copy-Item .app\shell\release\*.zip artifacts\
+
+      - name: Upload Electron Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-windows-${{ env.RELEASE_TAG }}
+          path: artifacts/*
+
+  electron-macos:
+    name: Electron macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Electron deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Electron macOS artifacts
+        run: pnpm --filter @inkcopy/desktop-shell package:mac
+
+      - name: Stage Electron macOS artifacts
+        run: |
+          mkdir -p artifacts
+          cp .app/shell/release/*.dmg artifacts/
+          cp .app/shell/release/*.zip artifacts/
+
+      - name: Upload Electron macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-macos-${{ env.RELEASE_TAG }}
+          path: artifacts/*
 
   publish:
-    needs: [build-windows, build-macos]
+    needs: [python-windows, python-macos, electron-windows, electron-macos]
     runs-on: ubuntu-latest
     steps:
-      - name: Download Windows artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: windows-${{ env.RELEASE_TAG }}
-          path: artifacts/
-
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-${{ env.RELEASE_TAG }}
-          path: artifacts/
+          path: artifacts
+          merge-multiple: true
 
       - name: List artifacts
-        run: ls -la artifacts/
+        run: find artifacts -maxdepth 1 -type f -print -exec ls -lh {} \;
 
-      - name: Upload to release (creates release if missing, replaces existing assets)
+      - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -126,11 +224,11 @@ jobs:
           set -e
           TAG="${RELEASE_TAG}"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG not found — creating."
-            gh release create "$TAG" \
-              --title "INKCOPY $TAG" \
-              --generate-notes
-          else
-            echo "Release $TAG already exists — uploading assets with --clobber."
+            gh release create "$TAG" --title "INKCOPY $TAG" --generate-notes
           fi
-          gh release upload "$TAG" artifacts/* --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' |
+            while IFS= read -r asset; do
+              [ -n "$asset" ] && gh release delete-asset "$TAG" "$asset" -y
+            done
+          mapfile -d '' FILES < <(find artifacts -maxdepth 1 -type f -print0)
+          gh release upload "$TAG" "${FILES[@]}" --clobber

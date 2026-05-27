@@ -89,24 +89,30 @@ export async function buildPastePayload(state: AppState): Promise<PastePayload |
  *   - Files only: native writeFiles.
  *   - Text only: standard clipboard.writeText.
  */
-export async function writePayloadToClipboard(payload: PastePayload): Promise<'mixed' | 'files' | 'text' | 'empty'> {
+export interface ClipboardWriteResult {
+  kind: 'staged-mixed' | 'files' | 'text' | 'empty'
+  stagedFiles: string[] | null
+}
+
+export async function writePayloadToClipboard(payload: PastePayload): Promise<ClipboardWriteResult> {
   const hasText = payload.text.length > 0
   const hasFiles = payload.files.length > 0
   if (!hasText && !hasFiles) {
     await window.inkcopy.clipboard.clear()
-    return 'empty'
+    return { kind: 'empty', stagedFiles: null }
   }
   if (hasText && hasFiles) {
-    const result = await window.inkcopy.clipboard.writeMixed({ text: payload.text, files: payload.files })
-    if (result?.ok) return 'mixed'
-    // Fall through to text — staged file paste will fire from main on hotkey.
+    // Deterministic mixed paste: preload text now, then after the user's
+    // Cmd/Ctrl+V the hotkey handler swaps clipboard to files and injects one
+    // synthetic paste. Many web upload targets ignore either text or files
+    // when both are on the same clipboard transaction.
     await window.inkcopy.clipboard.writeText(payload.text)
-    return 'text'
+    return { kind: 'staged-mixed', stagedFiles: payload.files }
   }
   if (hasFiles) {
     await window.inkcopy.clipboard.writeFiles(payload.files)
-    return 'files'
+    return { kind: 'files', stagedFiles: null }
   }
   await window.inkcopy.clipboard.writeText(payload.text)
-  return 'text'
+  return { kind: 'text', stagedFiles: null }
 }

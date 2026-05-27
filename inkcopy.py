@@ -23,6 +23,11 @@ def check_modules():
         from PyQt6.QtCore import Qt, QUrl, QMimeData, QTimer, pyqtSignal, QObject  # noqa: F401
     except ImportError:
         missing.append("PyQt6")
+    if sys.platform == "darwin":
+        try:
+            import Quartz  # noqa: F401
+        except ImportError:
+            missing.append("pyobjc-framework-Quartz")
 
     if missing:
         sep = "\\" if sys.platform == "win32" else "/"
@@ -36,6 +41,8 @@ def check_modules():
         print("\nOr install manually:")
         if sys.platform == "win32":
             print("   pip install keyboard natsort PyQt6")
+        elif sys.platform == "darwin":
+            print("   pip install pynput natsort PyQt6 pyobjc-framework-Cocoa pyobjc-framework-Quartz")
         else:
             print("   pip install pynput natsort PyQt6")
         print("\nPress Enter to exit...")
@@ -60,7 +67,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
@@ -612,12 +619,20 @@ else:
 #   NSURLPboardType. Writing NSURL objects via NSPasteboard.writeObjects_()
 #   produces "public.file-url" entries that every macOS browser recognises.
 # ---------------------------------------------------------------------------
+def _macos_pasteboard_types(pb) -> list[str]:
+    try:
+        return [str(t) for t in (pb.types() or [])]
+    except Exception:
+        return []
+
+
 def _set_macos_clipboard_files(paths: list[str]) -> bool:
     if sys.platform != "darwin":
         return False
     try:
         from AppKit import NSPasteboard, NSURL
         pb = NSPasteboard.generalPasteboard()
+        before = int(pb.changeCount())
         pb.clearContents()
         urls = []
         for p in paths:
@@ -628,8 +643,17 @@ def _set_macos_clipboard_files(paths: list[str]) -> bool:
         if not urls:
             return False
         ok = bool(pb.writeObjects_(urls))
-        _log(f"NSPasteboard wrote {len(urls)} file URL(s) (ok={ok})")
-        return ok
+        after = int(pb.changeCount())
+        types = _macos_pasteboard_types(pb)
+        verified = ok and after != before and any(
+            t in types
+            for t in ("public.file-url", "NSFilenamesPboardType", "Apple URL pasteboard type")
+        )
+        _log(
+            f"NSPasteboard wrote {len(urls)} file URL(s) "
+            f"(ok={ok}, verified={verified}, change={before}->{after}, types={types})"
+        )
+        return verified
     except Exception as exc:
         _log(f"NSPasteboard file write failed: {exc}", "ERROR")
         return False
@@ -641,9 +665,17 @@ def _set_macos_clipboard_text(text: str) -> bool:
     try:
         from AppKit import NSPasteboard, NSPasteboardTypeString
         pb = NSPasteboard.generalPasteboard()
+        before = int(pb.changeCount())
         pb.clearContents()
-        pb.setString_forType_(text, NSPasteboardTypeString)
-        return True
+        ok = bool(pb.setString_forType_(text, NSPasteboardTypeString))
+        after = int(pb.changeCount())
+        readback = pb.stringForType_(NSPasteboardTypeString) or ""
+        verified = ok and after != before and str(readback) == text
+        _log(
+            f"NSPasteboard wrote text ({len(text)} chars, ok={ok}, "
+            f"verified={verified}, change={before}->{after}, types={_macos_pasteboard_types(pb)})"
+        )
+        return verified
     except Exception as exc:
         _log(f"NSPasteboard text write failed: {exc}", "ERROR")
         return False
@@ -909,6 +941,29 @@ else:
         except Exception as _exc:
             _log(f"AppKit import failed, falling back to pynput: {_exc}", "WARN")
             _NSEVENT_AVAILABLE = False
+        try:
+            from Quartz import (  # type: ignore
+                CGEventGetFlags,
+                CGEventGetIntegerValueField,
+                CGEventTapCreate,
+                CGEventTapEnable,
+                CFMachPortCreateRunLoopSource,
+                CFRunLoopAddSource,
+                CFRunLoopGetMain,
+                kCFRunLoopCommonModes,
+                kCGEventFlagMaskCommand,
+                kCGEventKeyDown,
+                kCGEventTapDisabledByTimeout,
+                kCGEventTapDisabledByUserInput,
+                kCGEventTapOptionListenOnly,
+                kCGHeadInsertEventTap,
+                kCGKeyboardEventKeycode,
+                kCGSessionEventTap,
+            )
+            _QUARTZ_EVENT_TAP_AVAILABLE = True
+        except Exception as _exc:
+            _log(f"Quartz event tap import failed: {_exc}", "WARN")
+            _QUARTZ_EVENT_TAP_AVAILABLE = False
 
         # NSEvent mask for keyDown — explicit value keeps this independent of
         # PyObjC enum versions.
@@ -924,6 +979,9 @@ else:
         class _MacNSEventBackend(_HotkeyBackend):
             def __init__(self):
                 self._monitor = None
+                self._event_tap = None
+                self._event_tap_source = None
+                self._event_tap_callback = None
                 # Live cmd-held state is queried from NSEvent.modifierFlags(),
                 # which always reflects the actual hardware state.
                 self._controller = _pynkb.Controller()
@@ -942,30 +1000,91 @@ else:
                     "last_key_repr": "",
                     "last_error": "",
                     "listener_started": False,
+                    "event_tap_started": False,
                 }
 
             def register(self, on_paste, on_prev, on_next, on_pause):
-                if self._monitor is not None:
+                if self._monitor is not None or self._event_tap is not None:
                     return
                 self._on_paste = on_paste
                 self._on_prev = on_prev
                 self._on_next = on_next
                 self._on_pause = on_pause
-                if not _NSEVENT_AVAILABLE:
+                if not _NSEVENT_AVAILABLE and not _QUARTZ_EVENT_TAP_AVAILABLE:
                     self.stats["last_error"] = "AppKit unavailable"
-                    _log("AppKit/NSEvent unavailable — hotkeys disabled", "ERROR")
+                    _log("AppKit/NSEvent and Quartz event tap unavailable — hotkeys disabled", "ERROR")
+                    return
+                if _NSEVENT_AVAILABLE:
+                    try:
+                        self._monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                            _NS_EVENT_MASK_KEY_DOWN, self._handle_key_event
+                        )
+                        self.stats["listener_started"] = self._monitor is not None
+                        _log(f"NSEvent global monitor started (handle={self._monitor})")
+                    except Exception as exc:
+                        import traceback
+                        self.stats["last_error"] = f"register: {exc}"
+                        _log(f"NSEvent monitor FAILED: {exc}\n{traceback.format_exc()}", "ERROR")
+                        self._monitor = None
+                self._start_event_tap()
+
+            def _start_event_tap(self):
+                if self._event_tap is not None or not _QUARTZ_EVENT_TAP_AVAILABLE:
                     return
                 try:
-                    self._monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-                        _NS_EVENT_MASK_KEY_DOWN, self._handle_key_event
+                    mask = 1 << int(kCGEventKeyDown)
+
+                    def _tap_callback(proxy, event_type, event, refcon):
+                        try:
+                            et = int(event_type)
+                            if et in (
+                                int(kCGEventTapDisabledByTimeout),
+                                int(kCGEventTapDisabledByUserInput),
+                            ):
+                                try:
+                                    CGEventTapEnable(self._event_tap, True)
+                                    _log("CGEventTap re-enabled")
+                                except Exception as exc:
+                                    _log(f"CGEventTap re-enable failed: {exc}", "ERROR")
+                                return event
+                            if et == int(kCGEventKeyDown):
+                                kc = int(CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode))
+                                flags = int(CGEventGetFlags(event))
+                                cmd_held = bool(flags & int(kCGEventFlagMaskCommand))
+                                self.stats["keys_received"] += 1
+                                self.stats["last_key_repr"] = f"tap kc={kc} cmd={cmd_held} flags=0x{flags:x}"
+                                _log(f"CGEventTap keyDown kc={kc} cmd={cmd_held} flags=0x{flags:x}")
+                                self._handle_keycode(kc, cmd_held, "CGEventTap")
+                        except Exception as exc:
+                            self.stats["last_error"] = f"tap: {exc}"
+                            _log(f"CGEventTap handler error: {exc}", "ERROR")
+                        return event
+
+                    self._event_tap_callback = _tap_callback
+                    self._event_tap = CGEventTapCreate(
+                        kCGSessionEventTap,
+                        kCGHeadInsertEventTap,
+                        kCGEventTapOptionListenOnly,
+                        mask,
+                        self._event_tap_callback,
+                        None,
                     )
-                    self.stats["listener_started"] = self._monitor is not None
-                    _log(f"NSEvent global monitor started (handle={self._monitor})")
+                    if self._event_tap is None:
+                        self.stats["event_tap_started"] = False
+                        _log("CGEventTapCreate returned None — check Input Monitoring permission", "ERROR")
+                        return
+                    self._event_tap_source = CFMachPortCreateRunLoopSource(None, self._event_tap, 0)
+                    CFRunLoopAddSource(CFRunLoopGetMain(), self._event_tap_source, kCFRunLoopCommonModes)
+                    CGEventTapEnable(self._event_tap, True)
+                    self.stats["event_tap_started"] = True
+                    _log(f"CGEventTap started (tap={self._event_tap})")
                 except Exception as exc:
                     import traceback
-                    self.stats["last_error"] = f"register: {exc}"
-                    _log(f"NSEvent monitor FAILED: {exc}\n{traceback.format_exc()}", "ERROR")
-                    self._monitor = None
+                    self.stats["last_error"] = f"tap_register: {exc}"
+                    self.stats["event_tap_started"] = False
+                    _log(f"CGEventTap FAILED: {exc}\n{traceback.format_exc()}", "ERROR")
+                    self._event_tap = None
+                    self._event_tap_source = None
 
             def _handle_key_event(self, event):
                 try:
@@ -978,29 +1097,35 @@ else:
                     # actually receives events (the #1 macOS failure mode is
                     # "permission appears ON but no events ever arrive").
                     _log(f"NSEvent keyDown kc={kc} cmd={cmd_held} flags=0x{flags:x}")
+                    self._handle_keycode(kc, cmd_held, "NSEvent")
+                except Exception as exc:
+                    self.stats["last_error"] = f"handle: {exc}"
+                    _log(f"NSEvent handler error: {exc}", "ERROR")
 
+            def _handle_keycode(self, kc: int, cmd_held: bool, source: str):
+                try:
                     if kc == _MAC_KC_V:
                         self.stats["v_keys_seen"] += 1
                         if cmd_held:
                             self.stats["paste_fires"] += 1
-                            _log("Cmd+V → paste fire (NSEvent)")
+                            _log(f"Cmd+V → paste fire ({source})")
                             if self._on_paste is not None:
                                 self._on_paste()
                     elif kc == _MAC_KC_F9 and self._on_prev is not None:
                         self.stats["prev_fires"] += 1
-                        _log("F9 → prev (NSEvent)")
+                        _log(f"F9 → prev ({source})")
                         self._on_prev()
                     elif kc == _MAC_KC_F10 and self._on_next is not None:
                         self.stats["next_fires"] += 1
-                        _log("F10 → next (NSEvent)")
+                        _log(f"F10 → next ({source})")
                         self._on_next()
                     elif kc == _MAC_KC_F12 and self._on_pause is not None:
                         self.stats["pause_fires"] += 1
-                        _log("F12 → pause (NSEvent)")
+                        _log(f"F12 → pause ({source})")
                         self._on_pause()
                 except Exception as exc:
                     self.stats["last_error"] = f"handle: {exc}"
-                    _log(f"NSEvent handler error: {exc}", "ERROR")
+                    _log(f"{source} key handler error: {exc}", "ERROR")
 
             def unregister(self):
                 if self._monitor is not None:
@@ -1009,10 +1134,18 @@ else:
                     except Exception:
                         pass
                     self._monitor = None
+                if self._event_tap is not None:
+                    try:
+                        CGEventTapEnable(self._event_tap, False)
+                    except Exception:
+                        pass
+                    self._event_tap = None
+                    self._event_tap_source = None
                 self.stats["listener_started"] = False
+                self.stats["event_tap_started"] = False
 
             def is_alive(self) -> bool:
-                return self._monitor is not None
+                return self._monitor is not None or self._event_tap is not None
 
             def is_paste_modifier_held(self) -> bool:
                 if not _NSEVENT_AVAILABLE:
@@ -1116,10 +1249,10 @@ class SmartClipboardOverlay(QWidget):
         self._suppress_paste_hotkey: bool = False
         self._staged_sequence_active: bool = False  # กัน Ctrl+V ซ้ำระหว่างรอ → advance ผิดรอบ
         # หลัง Ctrl+V ของคุณ (โหมดไฟล์+ข้อความ): แชทมักต้องรอก่อนค่อยรับ paste ข้อความ — ปรับได้ใน config.json
-        self.staged_ms_after_user_paste = 300
-        self.staged_ms_clipboard_to_ctrl_v = 60
-        self.staged_ms_after_text_paste = 150
-        self.staged_ms_simple_paste = 90
+        self.staged_ms_after_user_paste = 450 if sys.platform == "darwin" else 300
+        self.staged_ms_clipboard_to_ctrl_v = 450 if sys.platform == "darwin" else 60
+        self.staged_ms_after_text_paste = 450 if sys.platform == "darwin" else 150
+        self.staged_ms_simple_paste = 140 if sys.platform == "darwin" else 90
 
         # ---- signal bridge ---------------------------------------------------
         self.signals = HotkeySignals()
@@ -2014,10 +2147,20 @@ class SmartClipboardOverlay(QWidget):
         self.vocab_filename = (cfg.get("vocab_filename") or "vocab.txt").strip() or "vocab.txt"
         if hasattr(self, "vocab_filename_input"):
             self.vocab_filename_input.setText(self.vocab_filename)
-        self.staged_ms_after_user_paste = max(50, min(int(cfg.get("staged_ms_after_user_paste", 300)), 8000))
-        self.staged_ms_clipboard_to_ctrl_v = max(30, min(int(cfg.get("staged_ms_clipboard_to_ctrl_v", 60)), 3000))
-        self.staged_ms_after_text_paste = max(50, min(int(cfg.get("staged_ms_after_text_paste", 150)), 8000))
-        self.staged_ms_simple_paste = max(40, min(int(cfg.get("staged_ms_simple_paste", 90)), 3000))
+        mac = sys.platform == "darwin"
+        default_after_user = 450 if mac else 300
+        default_clipboard_to_paste = 450 if mac else 60
+        default_after_text = 450 if mac else 150
+        default_simple = 140 if mac else 90
+        min_clipboard_to_paste = 250 if mac else 30
+        min_after_text = 250 if mac else 50
+        self.staged_ms_after_user_paste = max(50, min(int(cfg.get("staged_ms_after_user_paste", default_after_user)), 8000))
+        self.staged_ms_clipboard_to_ctrl_v = max(
+            min_clipboard_to_paste,
+            min(int(cfg.get("staged_ms_clipboard_to_ctrl_v", default_clipboard_to_paste)), 3000),
+        )
+        self.staged_ms_after_text_paste = max(min_after_text, min(int(cfg.get("staged_ms_after_text_paste", default_after_text)), 8000))
+        self.staged_ms_simple_paste = max(40, min(int(cfg.get("staged_ms_simple_paste", default_simple)), 3000))
         self._try_init()
 
     def _save_config(self):
@@ -2880,14 +3023,21 @@ class SmartClipboardOverlay(QWidget):
         # แอปเว็บมักรับแค่ไฟล์ถ้ามีทั้ง URL และ text ในคลิปบอร์ดชุดเดียว — แยกหลายรอบ:
         # Mixed paste: user Cmd+V → text pasted | synthetic Cmd+V → files pasted | advance
         if has_text and has_file:
-            mime.setText(text_combined)
-            clipboard.setMimeData(mime)
+            wrote_native_text = _set_macos_clipboard_text(text_combined)
+            if not wrote_native_text:
+                mime.setText(text_combined)
+                clipboard.setMimeData(mime)
             self._staged_pending_file_paths = file_paths
-            _log(f"Paste mode (mixed): text={len(text_combined)} chars, files={len(file_paths)} staged")
+            _log(
+                f"Paste mode (mixed): text={len(text_combined)} chars, "
+                f"files={len(file_paths)} staged, native_text={wrote_native_text}"
+            )
         elif has_text:
-            mime.setText(text_combined)
-            clipboard.setMimeData(mime)
-            _log(f"Paste mode (text-only): {len(text_combined)} chars")
+            wrote_native_text = _set_macos_clipboard_text(text_combined)
+            if not wrote_native_text:
+                mime.setText(text_combined)
+                clipboard.setMimeData(mime)
+            _log(f"Paste mode (text-only): {len(text_combined)} chars, native_text={wrote_native_text}")
         elif has_file:
             # On macOS the native NSPasteboard path is more reliable for
             # browsers (Chrome / Gemini / ChatGPT) — fall back to Qt only if
@@ -2991,7 +3141,8 @@ class SmartClipboardOverlay(QWidget):
             QApplication.clipboard().setMimeData(mime)
         QApplication.processEvents()
         _log(f"Staged file paste: {len(paths)} files queued (native={wrote_native})")
-        ms = max(40, min(self.staged_ms_clipboard_to_ctrl_v, 3000))
+        min_ms = 250 if sys.platform == "darwin" else 40
+        ms = max(min_ms, min(self.staged_ms_clipboard_to_ctrl_v, 3000))
         # After the synthetic file paste, advance to the next chapter directly.
         # The previous 0.2.1 flow re-pasted the text a third time "for chat
         # ordering" but observation shows Gemini/ChatGPT already place files
@@ -3021,18 +3172,33 @@ class SmartClipboardOverlay(QWidget):
     def _staged_send_synthetic_ctrl_v(self, after_delay=None):
         """ส่ง Ctrl+V (หรือ Cmd+V บน macOS) สังเคราะห์; หลังดีเลย์เรียก after_delay หรือจบรอบ."""
         self._suppress_paste_hotkey = True
+        sent = False
         if sys.platform == "win32":
             if not _win32_sendinput_ctrl_v():
                 try:
                     self._inject_ctrl_v_windows()
+                    sent = True
                 except Exception:
                     pass
-                _hotkey_backend.send_paste()
+                sent = _hotkey_backend.send_paste() or sent
+            else:
+                sent = True
         else:
-            _hotkey_backend.send_paste()
-        ms = max(50, min(self.staged_ms_after_text_paste, 8000))
+            sent = _hotkey_backend.send_paste()
+        if not sent:
+            _log("Synthetic paste failed; leaving staged files on clipboard for manual paste", "ERROR")
+            QTimer.singleShot(50, self._staged_clear_suppress_without_advance)
+            return
+        min_ms = 250 if sys.platform == "darwin" else 50
+        ms = max(min_ms, min(self.staged_ms_after_text_paste, 8000))
         done = after_delay if after_delay is not None else self._staged_clear_suppress_and_advance
         QTimer.singleShot(ms, done)
+
+    def _staged_clear_suppress_without_advance(self):
+        self._suppress_paste_hotkey = False
+        self._ignore_clipboard_change = False
+        self._staged_sequence_active = False
+        self.status_label.setText(f"[READY] Files are on clipboard — press {PASTE_MODIFIER_NAME}+V once")
 
     def _staged_clear_suppress_and_advance(self):
         self._suppress_paste_hotkey = False
@@ -3194,8 +3360,9 @@ class SmartClipboardOverlay(QWidget):
         if not registered:
             bits.append("⚪ Hotkeys not registered yet — set Prompt + Chapter folder first")
         elif alive:
+            tap = " tap=on" if stats.get("event_tap_started") else ""
             bits.append(
-                f"🟢 Hotkey listener: alive · keys={stats.get('keys_received', 0)} "
+                f"🟢 Hotkey listener: alive{tap} · keys={stats.get('keys_received', 0)} "
                 f"V={stats.get('v_keys_seen', 0)} pastes={stats.get('paste_fires', 0)} "
                 f"F9={stats.get('prev_fires', 0)} F10={stats.get('next_fires', 0)}"
             )

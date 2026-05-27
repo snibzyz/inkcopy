@@ -11,6 +11,7 @@
 //             throws, surfaced to the renderer via `{ ok: false, reason }`.
 
 const { ipcMain } = require('electron')
+const { execFile } = require('child_process')
 const { createLogger } = require('../helpers/logger.cjs')
 
 const log = createLogger('hotkey')
@@ -24,6 +25,7 @@ try {
 
 let _started = false
 let _mainWindowGetter = () => null
+let _syntheticMuteUntil = 0
 const _stats = {
   keysReceived: 0,
   vKeysSeen: 0,
@@ -48,6 +50,7 @@ function emitToRenderer(channel, payload) {
 }
 
 function handleKeyDown(event) {
+  if (Date.now() < _syntheticMuteUntil) return
   _stats.keysReceived += 1
   const kc = event.keycode
   const cmdHeld = !!event.metaKey
@@ -91,6 +94,44 @@ function handleKeyDown(event) {
     emitToRenderer('hotkey:pause')
     return
   }
+}
+
+function execFileWithTimeout(file, args, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const child = execFile(file, args, { windowsHide: true, timeout: timeoutMs }, (error) => {
+      if (error) {
+        resolve({ ok: false, reason: error.message || String(error) })
+        return
+      }
+      resolve({ ok: true })
+    })
+    child.on('error', (error) => {
+      resolve({ ok: false, reason: error.message || String(error) })
+    })
+  })
+}
+
+async function sendSyntheticPaste() {
+  _syntheticMuteUntil = Date.now() + 900
+  if (process.env.INKCOPY_E2E === '1') return { ok: true, reason: 'e2e-stub' }
+
+  if (process.platform === 'darwin') {
+    return await execFileWithTimeout('/usr/bin/osascript', [
+      '-e',
+      'tell application "System Events" to keystroke "v" using command down',
+    ])
+  }
+
+  if (process.platform === 'win32') {
+    return await execFileWithTimeout('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')",
+    ])
+  }
+
+  return await execFileWithTimeout('xdotool', ['key', 'ctrl+v'])
 }
 
 function startListener() {
@@ -145,11 +186,11 @@ function registerHotkeyIpc(getMainWindow) {
   // Synthetic Cmd+V — used by the staged file-paste flow. uiohook events
   // include synthetic ones, so we cooperate by setting a brief mute window
   // while our own injected keystroke propagates.
-  ipcMain.handle('hotkey:sendPaste', () => {
-    log.info('hotkey:sendPaste — synthetic injection (native impl pending)')
-    // TODO: ship CGEventPost / SendInput here; for now act as no-op so the
-    // renderer's staged-mixed flow doesn't error out the whole paste.
-    return { ok: false, reason: 'synthetic-paste-not-implemented' }
+  ipcMain.handle('hotkey:sendPaste', async () => {
+    log.info('hotkey:sendPaste — synthetic injection')
+    const result = await sendSyntheticPaste()
+    if (!result.ok) log.warn('synthetic paste failed', { reason: result.reason })
+    return result
   })
 
   ipcMain.handle('hotkey:stats', () => ({ ..._stats }))

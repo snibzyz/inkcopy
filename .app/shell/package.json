@@ -1,6 +1,6 @@
 {
   "name": "@inkcopy/desktop-shell",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "private": true,
   "description": "INKCOPY desktop shell — Electron + React renderer",
   "main": "electron/main.cjs",
@@ -15,10 +15,10 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:debug": "playwright test --debug",
-    "package:win": "pnpm build && electron-builder --win portable",
-    "publish:win": "pnpm build && electron-builder --win portable --publish always",
-    "package:mac": "pnpm build && electron-builder --mac dmg",
-    "publish:mac": "pnpm build && electron-builder --mac dmg --publish always"
+    "package:win": "pnpm build && electron-builder --win portable zip --publish never",
+    "publish:win": "pnpm build && electron-builder --win portable zip --publish always",
+    "package:mac": "pnpm build && electron-builder --mac dmg zip --publish never",
+    "publish:mac": "pnpm build && electron-builder --mac dmg zip --publish always"
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.45",
@@ -70,20 +70,24 @@
       }
     ],
     "win": {
-      "target": "portable",
-      "icon": "public/logo.ico"
+      "target": [
+        "portable",
+        "zip"
+      ],
+      "icon": "../../assets/inkcopy.ico"
     },
     "portable": {
-      "artifactName": "INKCOPY-Portable-${version}.exe"
+      "artifactName": "INKCOPY-Electron-Portable-${version}.${ext}"
     },
     "mac": {
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "category": "public.app-category.utilities",
-      "icon": "public/logo.png",
+      "icon": "../../assets/inkcopy.png",
       "identity": null,
-      "artifactName": "INKCOPY-${version}-${arch}.${ext}"
+      "artifactName": "INKCOPY-Electron-${version}-${arch}.${ext}"
     },
     "dmg": {
       "writeUpdateInfo": false

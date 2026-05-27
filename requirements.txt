@@ -3,3 +3,4 @@ PyQt6
 keyboard; sys_platform == "win32"
 pynput; sys_platform != "win32"
 pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"

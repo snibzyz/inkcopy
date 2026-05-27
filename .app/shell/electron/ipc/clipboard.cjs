@@ -1,4 +1,8 @@
 const { ipcMain, clipboard, nativeImage } = require('electron')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const { execFileSync } = require('child_process')
 const { createLogger } = require('../helpers/logger.cjs')
 
 const log = createLogger('clipboard')
@@ -29,6 +33,47 @@ function buildCfHdropBuffer(paths) {
   return Buffer.concat([header, ...names])
 }
 
+function writeMacFilesViaJxa(paths) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'inkcopy-pasteboard-'))
+  const payloadPath = path.join(tmpDir, 'files.json')
+  fs.writeFileSync(payloadPath, JSON.stringify(paths), 'utf8')
+  const script = `
+ObjC.import('AppKit')
+ObjC.import('Foundation')
+function run(argv) {
+  const payloadPath = argv[0]
+  const json = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(payloadPath, $.NSUTF8StringEncoding, null))
+  const paths = JSON.parse(json)
+  const pb = $.NSPasteboard.generalPasteboard
+  const before = Number(pb.changeCount)
+  pb.clearContents
+  const urls = []
+  for (let i = 0; i < paths.length; i++) {
+    urls.push($.NSURL.fileURLWithPath($(paths[i])).js)
+  }
+  const ok = pb.writeObjects(urls)
+  const after = Number(pb.changeCount)
+  const types = ObjC.deepUnwrap(pb.types)
+  return JSON.stringify({ ok: !!ok && after !== before, before, after, types })
+}
+`
+  try {
+    const out = execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script, payloadPath], {
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true,
+    })
+    const result = JSON.parse(String(out || '{}'))
+    return { ok: !!result.ok, types: result.types || [], before: result.before, after: result.after }
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+}
+
 /**
  * Write file paths to the clipboard as native file references. Returns
  * { ok, count, kind }. Best-effort: when the native bridge isn't available
@@ -52,6 +97,21 @@ function writeFileUrls(paths) {
   }
 
   if (process.platform === 'darwin') {
+    try {
+      const result = writeMacFilesViaJxa(paths)
+      if (result.ok) {
+        log.info('writeFileUrls NSPasteboard.writeObjects NSURL', {
+          count: paths.length,
+          types: result.types,
+          change: `${result.before}->${result.after}`,
+        })
+        return { ok: true, count: paths.length, kind: 'NSPasteboard.writeObjects' }
+      }
+      log.warn('NSPasteboard.writeObjects returned false', { types: result.types })
+    } catch (err) {
+      log.warn('NSPasteboard.writeObjects via JXA failed', { error: err && err.message })
+    }
+
     try {
       // NSFilenamesPboardType — historical but still recognised. Write the
       // property-list string array directly; AppKit-aware receivers will

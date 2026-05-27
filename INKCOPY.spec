@@ -110,8 +110,8 @@ if is_macos:
         info_plist={
             "CFBundleName": "INKCOPY",
             "CFBundleDisplayName": "INKCOPY",
-            "CFBundleShortVersionString": "0.2.1",
-            "CFBundleVersion": "0.2.1",
+            "CFBundleShortVersionString": "0.2.3",
+            "CFBundleVersion": "0.2.3",
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
             # Accessibility prompt rationale shown by macOS when asking for permission.

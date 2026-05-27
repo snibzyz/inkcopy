@@ -25,23 +25,28 @@
 
 ### บนเครื่อง Windows
 
-1. ดาวน์โหลด **`INKCOPY.exe`** จาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
-2. วางที่ไหนก็ได้ในเครื่อง (ไม่ต้องติดตั้ง — เป็นไฟล์เดียวจบ)
-3. ดับเบิลคลิกเปิด
+1. ดาวน์โหลดจาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
+   - แนะนำสำหรับคนทั่วไป: **`INKCOPY-Python-Windows-*.exe`** หรือ **`INKCOPY-Python-Windows-*.zip`**
+   - ถ้าต้องการรันจาก source: **`INKCOPY-Python-Source-macOS-Windows-*.zip`**
+2. ถ้าใช้ไฟล์ `.exe` ให้ดับเบิลคลิกเปิดได้เลย
+3. ถ้าใช้ source zip ให้แตกไฟล์ แล้วดับเบิลคลิก **`Start INKCOPY Python.bat`** ระบบจะสร้าง `.venv` ติดตั้ง Python dependencies แล้วเปิดแอปให้
 4. ถ้ามีแถบเตือนของ Windows → กด **More info** → **Run anyway**
 
 ### บนเครื่อง Mac
 
-1. ดาวน์โหลด **`INKCOPY-v0.2.0.dmg`** จาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
-2. ดับเบิลคลิกเปิด → ลาก **`INKCOPY.app`** ไปยังโฟลเดอร์ Applications
-3. **ครั้งแรก**: คลิกขวาที่ไอคอน → **Open** → กด **Open** อีกครั้ง (ครั้งต่อไปดับเบิลคลิกได้ปกติ)
-4. **สำคัญมาก** — ให้สิทธิ์ Accessibility:
+1. ดาวน์โหลดจาก [หน้าดาวน์โหลด](https://github.com/snibzyz/inkcopy/releases/latest)
+   - แนะนำสำหรับ macOS ตอนนี้: **`INKCOPY-Python-Source-macOS-Windows-*.zip`** แล้วดับเบิลคลิก **`Start INKCOPY Python.command`**
+   - ถ้าต้องการแอปสำเร็จรูป: **`INKCOPY-v*.dmg`** หรือ **`INKCOPY-Python-macOS-*.zip`**
+2. ถ้าใช้ `.dmg` ให้ดับเบิลคลิกเปิด → ลาก **`INKCOPY.app`** ไปยังโฟลเดอร์ Applications
+3. ถ้าใช้ source zip ระบบจะสร้าง `.venv` ติดตั้ง Python dependencies แล้วเปิดแอปให้เอง
+4. **ครั้งแรก**: คลิกขวาที่ไอคอน/ไฟล์ start → **Open** → กด **Open** อีกครั้ง (ครั้งต่อไปดับเบิลคลิกได้ปกติ)
+5. **สำคัญมาก** — ให้สิทธิ์ Accessibility:
    - เปิด **System Settings** → **Privacy & Security** → **Accessibility**
    - กดเครื่องหมาย **+** เพิ่ม INKCOPY แล้วเปิดสวิตช์
    - **Quit แอป → เปิดใหม่** (สิทธิ์เพิ่งให้จะมีผลก็ต่อเมื่อเริ่มแอปใหม่)
    - ในหน้าต่าง INKCOPY ดู **แถบ Hotkey ใต้สถานะ** — ถ้าเป็น 🟢 = ใช้ได้, ถ้า 🔴 = ดู [แก้ปัญหาที่พบบ่อย](#แก้ปัญหาที่พบบ่อย)
 
-> เมื่อมีเวอร์ชันใหม่ ปุ่มสีเขียว **⬆ vX.X.X** จะโผล่ที่มุมขวาบน — กดแล้วเลือก **Install Now** เพื่อโหลดและติดตั้งให้อัตโนมัติ (Windows: NSIS installer · Mac: เปิด .dmg ให้ลาก)
+> macOS: ถ้าเน้นวางไฟล์พร้อมข้อความและจับ Cmd+V ให้แม่น ให้ใช้ Python source zip ก่อน เพราะใช้ native clipboard/hotkey ได้ตรงกว่า Electron.
 
 ---
 

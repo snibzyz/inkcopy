@@ -4,7 +4,33 @@
 //   .app/       → ..  ขึ้นไป <APP>/
 //   <APP>/      → ..  ขึ้นไป Mega Project/
 // ถ้า structure ของแอปต่างจากนี้ ปรับจำนวน ../ ให้ตรง
-const inkTokens = require('../../../.shared/tailwind/tokens.cjs')
+let inkTokens
+try {
+  inkTokens = require('../../../.shared/tailwind/tokens.cjs')
+} catch {
+  inkTokens = {
+    themeExtend: {
+      colors: {
+        vscode: {
+          bg: '#1e1e1e',
+          editor: '#252526',
+          panel: '#2d2d30',
+          border: '#3e3e42',
+          fg: '#cccccc',
+          muted: '#858585',
+          input: '#3c3c3c',
+          focus: '#007acc',
+        },
+      },
+      borderRadius: {
+        'mac-sm': '6px',
+      },
+      boxShadow: {
+        mac: '0 18px 50px rgba(0, 0, 0, 0.32)',
+      },
+    },
+  }
+}
 
 module.exports = {
   content: [

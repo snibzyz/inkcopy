@@ -134,6 +134,7 @@ export interface AppState {
 }
 
 let _toastCounter = 0
+const IS_MAC = typeof window !== 'undefined' && window.inkcopy?.isMac
 
 export const useStore = create<AppState>((set, _get) => ({
   // ── Initial state ────────────────────────────────────────────────────
@@ -163,10 +164,10 @@ export const useStore = create<AppState>((set, _get) => ({
 
   stagedPendingFilePaths: null,
   stagedSequenceActive: false,
-  stagedMsAfterUserPaste: 300,
-  stagedMsClipboardToCtrlV: 60,
-  stagedMsAfterTextPaste: 150,
-  stagedMsSimplePaste: 90,
+  stagedMsAfterUserPaste: IS_MAC ? 450 : 300,
+  stagedMsClipboardToCtrlV: IS_MAC ? 450 : 60,
+  stagedMsAfterTextPaste: IS_MAC ? 450 : 150,
+  stagedMsSimplePaste: IS_MAC ? 140 : 90,
 
   hotkeysRegistered: false,
   hotkeyStats: INITIAL_HOTKEY_STATS,

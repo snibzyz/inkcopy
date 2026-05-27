@@ -32,6 +32,8 @@ export default function App() {
   const minimized = useStore((s) => s.minimized)
   const advanceChapter = useStore((s) => s.advanceChapter)
   const setCurrentIndex = useStore((s) => s.setCurrentIndex)
+  const setStagedPendingFilePaths = useStore((s) => s.setStagedPendingFilePaths)
+  const setStagedSequenceActive = useStore((s) => s.setStagedSequenceActive)
   const togglePaused = useStore((s) => s.togglePaused)
   const concurrent = useStore((s) => s.concurrentChapters)
   const showToast = useStore((s) => s.showToast)
@@ -59,7 +61,8 @@ export default function App() {
     // clipboard armed with the upcoming chapter; the handler here just toasts
     // what was just pasted and advances the index (which re-triggers the
     // effect to pre-load the next chapter).
-    const offPaste = window.inkcopy?.hotkey?.onPaste?.(() => {
+    const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+    const finishAdvance = () => {
       const state = useStore.getState()
       if (state.paused || state.mode !== 'paste') return
       if (!state.chapterFiles.length || state.currentIndex >= state.chapterFiles.length) return
@@ -75,6 +78,48 @@ export default function App() {
         durationMs: 1800,
       })
       advanceChapter(toPaste)
+    }
+
+    const offPaste = window.inkcopy?.hotkey?.onPaste?.(() => {
+      void (async () => {
+        const state = useStore.getState()
+        if (state.paused || state.mode !== 'paste') return
+        if (state.stagedSequenceActive) return
+
+        const stagedFiles = state.stagedPendingFilePaths?.slice() ?? []
+        if (stagedFiles.length) {
+          setStagedSequenceActive(true)
+          setStagedPendingFilePaths(null)
+          try {
+            await sleep(Math.max(50, state.stagedMsAfterUserPaste))
+            await window.inkcopy.clipboard.writeFiles(stagedFiles)
+            await window.inkcopy.log.info('paste', 'staged files armed', { files: stagedFiles.length })
+            await sleep(Math.max(40, state.stagedMsClipboardToCtrlV))
+            const sent = await window.inkcopy.hotkey.sendPaste()
+            if (!sent?.ok) {
+              useStore.getState().showToast({
+                message: 'ไฟล์อยู่ใน clipboard แล้ว กด Cmd/Ctrl+V อีกครั้งเพื่อวางไฟล์',
+                tone: 'error',
+                durationMs: 5000,
+              })
+              return
+            }
+            await sleep(Math.max(80, state.stagedMsAfterTextPaste))
+            finishAdvance()
+          } catch (err) {
+            useStore.getState().showToast({
+              message: `วางไฟล์อัตโนมัติไม่ได้: ${(err as Error).message}`,
+              tone: 'error',
+              durationMs: 5000,
+            })
+          } finally {
+            setStagedSequenceActive(false)
+          }
+          return
+        }
+
+        finishAdvance()
+      })()
     })
     const offPrev = window.inkcopy?.hotkey?.onPrev?.(() => {
       const { currentIndex } = useStore.getState()
@@ -93,7 +138,15 @@ export default function App() {
       offNext?.()
       offPause?.()
     }
-  }, [advanceChapter, concurrent, setCurrentIndex, showToast, togglePaused])
+  }, [
+    advanceChapter,
+    concurrent,
+    setCurrentIndex,
+    setStagedPendingFilePaths,
+    setStagedSequenceActive,
+    showToast,
+    togglePaused,
+  ])
 
   // Detect available update once at boot
   useEffect(() => {
@@ -148,6 +201,7 @@ export default function App() {
         !state.chapterFiles.length ||
         state.currentIndex >= state.chapterFiles.length
       ) {
+        useStore.getState().setStagedPendingFilePaths(null)
         lastWritten = key
         return
       }
@@ -155,11 +209,13 @@ export default function App() {
       try {
         const payload = await buildPastePayload(state)
         if (cancelled || !payload) return
-        await writePayloadToClipboard(payload)
+        const written = await writePayloadToClipboard(payload)
+        useStore.getState().setStagedPendingFilePaths(written.stagedFiles)
         lastWritten = key
         await window.inkcopy.log.info('paste', 'pre-loaded clipboard', {
           chars: payload.text.length,
           files: payload.files.length,
+          kind: written.kind,
           label: payload.toastLabel,
         })
       } catch (err) {
