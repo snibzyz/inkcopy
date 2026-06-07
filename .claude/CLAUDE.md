@@ -59,6 +59,7 @@ INKCOPY มี 2 implementation ขนานกัน:
 
 ## Recent changes
 
+- **2026-06-08**: fix mixed paste (prompt=file + chapter=text) where files stacked & chapter text went missing after a few rounds. Root cause: Windows text clipboard write went through Qt (`OleSetClipboard`) which fails silently under clipboard contention → stale FILE data left on clipboard. Now the **text** write uses native `SetClipboardData` (CF_UNICODETEXT) with an OpenClipboard retry loop (and correct 64-bit ctypes restypes). **File writes left on the existing Qt path untouched** — minimal, surgical change. (A broader earlier attempt — CF_HDROP files + GetAsyncKeyState + UI scroll — was reverted for making it worse.)
 - **2026-05-26**: v0.2.2 — CGEventPost-based synthetic Cmd+V, Input Monitoring detection, DMG launch warning
 - **2026-05-26**: Electron scaffold created at `.app/shell/` (no implementation yet)
 - **2026-05-26**: v0.2.1 — fix macOS pynput crash + UTF-8 BOM on text outputs

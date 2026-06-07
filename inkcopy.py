@@ -504,7 +504,15 @@ def copy_mode_group_output_name(first_ch_name: str, last_ch_name: str) -> tuple[
 
 
 # ---------------------------------------------------------------------------
-# Windows: SendInput (Ctrl+V) สำหรับวางไฟล์/ข้อความสังเคราะห์หลังผู้ใช้ Ctrl+V รอบแรก
+# Windows: native clipboard text writer (CF_UNICODETEXT)
+#   Qt's QClipboard.setMimeData() uses OleSetClipboard, which can silently FAIL
+#   (CLIPBRD_E_CANT_OPEN) when the app we just pasted into still holds the
+#   clipboard open. In mixed paste mode the clipboard flips text -> files ->
+#   text within ~0.5s, so one lost text write leaves stale FILE data and the
+#   next real Ctrl+V pastes files instead of text (files stack, chapter text
+#   missing). SetClipboardData with an OpenClipboard retry loop survives that.
+#   NOTE: file writes deliberately stay on the existing Qt path — they already
+#   work — so this change only hardens the text write.
 # ---------------------------------------------------------------------------
 def _win32_set_clipboard_unicode(text: str) -> bool:
     if sys.platform != "win32":
@@ -516,6 +524,18 @@ def _win32_set_clipboard_unicode(text: str) -> bool:
     GMEM_MOVEABLE = 0x0002
     kernel32 = ctypes.windll.kernel32
     user32 = ctypes.windll.user32
+    # Correct restypes are essential on 64-bit: handles/pointers are 64-bit and
+    # ctypes defaults to c_int, which would truncate them and corrupt/crash.
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
 
     opened = False
     for _ in range(40):
@@ -524,6 +544,7 @@ def _win32_set_clipboard_unicode(text: str) -> bool:
             break
         kernel32.Sleep(25)
     if not opened:
+        _log("win32 clipboard: OpenClipboard failed after retries", "ERROR")
         return False
     try:
         if not user32.EmptyClipboard():
@@ -541,6 +562,7 @@ def _win32_set_clipboard_unicode(text: str) -> bool:
             ctypes.memmove(ptr, raw, sz)
         finally:
             kernel32.GlobalUnlock(h_mem)
+        # On success the system owns h_mem — do NOT free it.
         if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
             kernel32.GlobalFree(h_mem)
             return False
@@ -681,6 +703,17 @@ def _set_macos_clipboard_text(text: str) -> bool:
     except Exception as exc:
         _log(f"NSPasteboard text write failed: {exc}", "ERROR")
         return False
+
+
+def _set_clipboard_text_native(text: str) -> bool:
+    """Write text to the clipboard via the OS-native API (reliable under the
+    rapid clipboard swaps of mixed paste). Returns False on Linux / failure so
+    callers fall back to Qt's QClipboard."""
+    if sys.platform == "darwin":
+        return _set_macos_clipboard_text(text)
+    if sys.platform == "win32":
+        return _win32_set_clipboard_unicode(text)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -3025,7 +3058,7 @@ class SmartClipboardOverlay(QWidget):
         # แอปเว็บมักรับแค่ไฟล์ถ้ามีทั้ง URL และ text ในคลิปบอร์ดชุดเดียว — แยกหลายรอบ:
         # Mixed paste: user Cmd+V → text pasted | synthetic Cmd+V → files pasted | advance
         if has_text and has_file:
-            wrote_native_text = _set_macos_clipboard_text(text_combined)
+            wrote_native_text = _set_clipboard_text_native(text_combined)
             if not wrote_native_text:
                 mime.setText(text_combined)
                 clipboard.setMimeData(mime)
@@ -3035,7 +3068,7 @@ class SmartClipboardOverlay(QWidget):
                 f"files={len(file_paths)} staged, native_text={wrote_native_text}"
             )
         elif has_text:
-            wrote_native_text = _set_macos_clipboard_text(text_combined)
+            wrote_native_text = _set_clipboard_text_native(text_combined)
             if not wrote_native_text:
                 mime.setText(text_combined)
                 clipboard.setMimeData(mime)
