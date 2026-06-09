@@ -536,6 +536,7 @@ def _win32_set_clipboard_unicode(text: str) -> bool:
     user32.SetClipboardData.restype = wintypes.HANDLE
     user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
     user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
 
     opened = False
     for _ in range(40):
@@ -566,9 +567,112 @@ def _win32_set_clipboard_unicode(text: str) -> bool:
         if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
             kernel32.GlobalFree(h_mem)
             return False
-        return True
+        wrote = True
     finally:
         user32.CloseClipboard()
+    # Post-verify (clipboard now closed): confirm TEXT actually landed and no
+    # stale FILE data lingered. This is what catches the "files stay, text
+    # missing" failure — we report False so the caller can retry.
+    if not wrote:
+        return False
+    if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+        _log("win32 clipboard: CF_UNICODETEXT not present after write", "ERROR")
+        return False
+    return True
+
+
+def _win32_set_clipboard_files(paths: list[str]) -> bool:
+    """Write a CF_HDROP file list to the clipboard natively (Windows).
+
+    This is the SAME clipboard format Qt's setUrls() produces for local files,
+    so the target app (Gemini/Chrome) sees no difference — but routing it through
+    the native API keeps clipboard *ownership* consistent with the native text
+    write. Previously files went through Qt (OleSetClipboard) while text went
+    native (SetClipboardData); the two ownership models fought under the rapid
+    text→file→text swaps of mixed paste, so a write could land silently stale
+    and leave FILE data on the clipboard → the next real Ctrl+V pasted files
+    (stacking) and the chapter text never appeared. One mechanism = no fight.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    CF_HDROP = 15
+    GHND = 0x0042  # GMEM_MOVEABLE | GMEM_ZEROINIT
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+
+    valid = [os.path.abspath(p) for p in paths if os.path.exists(p)]
+    if not valid:
+        _log("win32 clipboard: no existing files to write to CF_HDROP", "WARN")
+        return False
+
+    class _DROPFILES(ctypes.Structure):
+        _fields_ = [
+            ("pFiles", wintypes.DWORD),  # offset to the file list
+            ("pt_x", wintypes.LONG),
+            ("pt_y", wintypes.LONG),
+            ("fNC", wintypes.BOOL),
+            ("fWide", wintypes.BOOL),    # TRUE → wide (UTF-16) file names
+        ]
+
+    header = _DROPFILES()
+    header_size = ctypes.sizeof(_DROPFILES)
+    header.pFiles = header_size
+    header.fWide = 1
+    # File list: each path NUL-terminated, whole list double-NUL terminated.
+    files_blob = ("".join(p + "\0" for p in valid) + "\0").encode("utf-16-le")
+    total = header_size + len(files_blob)
+
+    opened = False
+    for _ in range(40):
+        if user32.OpenClipboard(None):
+            opened = True
+            break
+        kernel32.Sleep(25)
+    if not opened:
+        _log("win32 clipboard(files): OpenClipboard failed after retries", "ERROR")
+        return False
+    wrote = False
+    try:
+        if not user32.EmptyClipboard():
+            return False
+        h_mem = kernel32.GlobalAlloc(GHND, total)
+        if not h_mem:
+            return False
+        ptr = kernel32.GlobalLock(h_mem)
+        if not ptr:
+            kernel32.GlobalFree(h_mem)
+            return False
+        try:
+            ctypes.memmove(ptr, ctypes.byref(header), header_size)
+            ctypes.memmove(ptr + header_size, files_blob, len(files_blob))
+        finally:
+            kernel32.GlobalUnlock(h_mem)
+        if not user32.SetClipboardData(CF_HDROP, h_mem):
+            kernel32.GlobalFree(h_mem)
+            return False
+        wrote = True
+    finally:
+        user32.CloseClipboard()
+    if not wrote:
+        return False
+    if not user32.IsClipboardFormatAvailable(CF_HDROP):
+        _log("win32 clipboard: CF_HDROP not present after write", "ERROR")
+        return False
+    return True
 
 
 if sys.platform == "win32":
@@ -712,7 +816,32 @@ def _set_clipboard_text_native(text: str) -> bool:
     if sys.platform == "darwin":
         return _set_macos_clipboard_text(text)
     if sys.platform == "win32":
-        return _win32_set_clipboard_unicode(text)
+        # Self-verifying write + a couple of retries: if the target app still
+        # holds the clipboard open (post-paste), the first attempt can fail —
+        # retrying after a short sleep wins instead of silently leaving stale
+        # data behind.
+        import ctypes
+        for _attempt in range(3):
+            if _win32_set_clipboard_unicode(text):
+                return True
+            ctypes.windll.kernel32.Sleep(20)
+        return False
+    return False
+
+
+def _set_clipboard_files_native(paths: list[str]) -> bool:
+    """Write a file list to the clipboard via the OS-native API.
+    macOS → NSPasteboard file URLs; Windows → CF_HDROP. Returns False on
+    Linux / failure so callers fall back to Qt's QClipboard.setUrls()."""
+    if sys.platform == "darwin":
+        return _set_macos_clipboard_files(paths)
+    if sys.platform == "win32":
+        import ctypes
+        for _attempt in range(3):
+            if _win32_set_clipboard_files(paths):
+                return True
+            ctypes.windll.kernel32.Sleep(20)
+        return False
     return False
 
 
@@ -1283,10 +1412,14 @@ class SmartClipboardOverlay(QWidget):
         self._staged_pending_file_paths: list[str] | None = None
         self._suppress_paste_hotkey: bool = False
         self._staged_sequence_active: bool = False  # กัน Ctrl+V ซ้ำระหว่างรอ → advance ผิดรอบ
+        # Safety net: if any step of the staged text→file→advance chain ever
+        # raises or a timer never fires, _staged_sequence_active would stay True
+        # and silently swallow every future paste. This watchdog force-clears it.
+        self._staged_watchdog: QTimer | None = None
         # หลัง Ctrl+V ของคุณ (โหมดไฟล์+ข้อความ): แชทมักต้องรอก่อนค่อยรับ paste ข้อความ — ปรับได้ใน config.json
-        self.staged_ms_after_user_paste = 450 if sys.platform == "darwin" else 300
-        self.staged_ms_clipboard_to_ctrl_v = 450 if sys.platform == "darwin" else 60
-        self.staged_ms_after_text_paste = 450 if sys.platform == "darwin" else 150
+        self.staged_ms_after_user_paste = 450 if sys.platform == "darwin" else 350
+        self.staged_ms_clipboard_to_ctrl_v = 450 if sys.platform == "darwin" else 90
+        self.staged_ms_after_text_paste = 450 if sys.platform == "darwin" else 250
         self.staged_ms_simple_paste = 140 if sys.platform == "darwin" else 90
 
         # ---- signal bridge ---------------------------------------------------
@@ -2116,6 +2249,13 @@ class SmartClipboardOverlay(QWidget):
 
     def event(self, e):
         if e.type() == self._get_paste_hotkey_event_type():
+            # A staged round is mid-flight (we're swapping clipboard text→file
+            # and synth-pasting). Drop any real Ctrl+V that arrives now: honoring
+            # it would either double-advance after the sequence ends or restart
+            # the timer mid-swap. The user's next *real* paste lands after the
+            # sequence clears _staged_sequence_active.
+            if self._staged_sequence_active:
+                return True
             self._paste_hotkey_timer.stop()
             delay = (
                 self.staged_ms_after_user_paste
@@ -2183,9 +2323,9 @@ class SmartClipboardOverlay(QWidget):
         if hasattr(self, "vocab_filename_input"):
             self.vocab_filename_input.setText(self.vocab_filename)
         mac = sys.platform == "darwin"
-        default_after_user = 450 if mac else 300
-        default_clipboard_to_paste = 450 if mac else 60
-        default_after_text = 450 if mac else 150
+        default_after_user = 450 if mac else 350
+        default_clipboard_to_paste = 450 if mac else 90
+        default_after_text = 450 if mac else 250
         default_simple = 140 if mac else 90
         min_clipboard_to_paste = 250 if mac else 30
         min_after_text = 250 if mac else 50
@@ -3020,6 +3160,7 @@ class SmartClipboardOverlay(QWidget):
 
         self._staged_pending_file_paths = None
         self._staged_sequence_active = False
+        self._staged_stop_watchdog()
         self._ignore_clipboard_change = True
 
         clipboard = QApplication.clipboard()
@@ -3074,10 +3215,11 @@ class SmartClipboardOverlay(QWidget):
                 clipboard.setMimeData(mime)
             _log(f"Paste mode (text-only): {len(text_combined)} chars, native_text={wrote_native_text}")
         elif has_file:
-            # On macOS the native NSPasteboard path is more reliable for
-            # browsers (Chrome / Gemini / ChatGPT) — fall back to Qt only if
-            # the AppKit write fails or we're on Windows / Linux.
-            wrote_native = _set_macos_clipboard_files(file_paths)
+            # Native write keeps clipboard ownership consistent with the text
+            # write (macOS NSPasteboard / Windows CF_HDROP); browsers ignore
+            # Qt's legacy file URL format on some macOS versions anyway. Fall
+            # back to Qt only if the native write fails (e.g. Linux).
+            wrote_native = _set_clipboard_files_native(file_paths)
             if not wrote_native:
                 mime.setUrls([QUrl.fromLocalFile(p) for p in file_paths])
                 clipboard.setMimeData(mime)
@@ -3158,18 +3300,48 @@ class SmartClipboardOverlay(QWidget):
             paths = list(pending)
             self._staged_pending_file_paths = None
             self._staged_sequence_active = True
-            self._run_staged_file_paste_then_finish(paths)
+            self._staged_begin_watchdog()
+            try:
+                self._run_staged_file_paste_then_finish(paths)
+            except Exception as exc:
+                _log(f"Staged paste sequence crashed: {exc}", "ERROR")
+                self._staged_reset_state()
             return
 
         self._finish_paste_advance()
 
+    def _staged_begin_watchdog(self):
+        """Arm a one-shot timer that force-clears a stuck staged sequence.
+        Reuses a single timer so repeated pastes don't leak QTimer objects."""
+        if self._staged_watchdog is None:
+            self._staged_watchdog = QTimer(self)
+            self._staged_watchdog.setSingleShot(True)
+            self._staged_watchdog.timeout.connect(self._staged_watchdog_fire)
+        self._staged_watchdog.start(8000)
+
+    def _staged_stop_watchdog(self):
+        if self._staged_watchdog is not None:
+            self._staged_watchdog.stop()
+
+    def _staged_watchdog_fire(self):
+        if self._staged_sequence_active:
+            _log("Staged sequence watchdog fired — force-clearing stuck state", "WARN")
+            self._staged_reset_state()
+            self._update_status()
+
+    def _staged_reset_state(self):
+        self._suppress_paste_hotkey = False
+        self._ignore_clipboard_change = False
+        self._staged_sequence_active = False
+        self._staged_stop_watchdog()
+
     def _run_staged_file_paste_then_finish(self, paths: list[str]):
         """หลังคุณ Ctrl+V วางข้อความแล้ว — ตั้งคลิปบอร์ดเป็นไฟล์แล้ว Ctrl+V สังเคราะห์."""
         self._ignore_clipboard_change = True
-        # Prefer NSPasteboard on macOS (browsers ignore Qt's legacy file URL
-        # format on some macOS versions). Fall back to Qt elsewhere or if the
-        # native write fails.
-        wrote_native = _set_macos_clipboard_files(paths)
+        # Native CF_HDROP (Win) / NSPasteboard (mac) keeps ownership consistent
+        # with the text write so the rapid text→file→text swaps don't leave a
+        # half-written clipboard. Fall back to Qt only if the native write fails.
+        wrote_native = _set_clipboard_files_native(paths)
         if not wrote_native:
             mime = QMimeData()
             mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
@@ -3230,15 +3402,11 @@ class SmartClipboardOverlay(QWidget):
         QTimer.singleShot(ms, done)
 
     def _staged_clear_suppress_without_advance(self):
-        self._suppress_paste_hotkey = False
-        self._ignore_clipboard_change = False
-        self._staged_sequence_active = False
+        self._staged_reset_state()
         self.status_label.setText(f"[READY] Files are on clipboard — press {PASTE_MODIFIER_NAME}+V once")
 
     def _staged_clear_suppress_and_advance(self):
-        self._suppress_paste_hotkey = False
-        self._ignore_clipboard_change = False
-        self._staged_sequence_active = False
+        self._staged_reset_state()
         self._finish_paste_advance()
 
     def _finish_paste_advance(self):

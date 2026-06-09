@@ -9,8 +9,9 @@
   "copy_template_enabled": true,
   "prompt_paste_modes": {},
   "chapter_paste_as_text": false,
-  "staged_ms_after_user_paste": 300,
-  "staged_ms_clipboard_to_ctrl_v": 60,
-  "staged_ms_after_text_paste": 150,
-  "staged_ms_simple_paste": 90
+  "staged_ms_after_user_paste": 350,
+  "staged_ms_clipboard_to_ctrl_v": 90,
+  "staged_ms_after_text_paste": 250,
+  "staged_ms_simple_paste": 90,
+  "ui_scale": 1.0
 }
