@@ -69,7 +69,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.2.3"
+__version__ = "0.2.5"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
@@ -547,6 +547,7 @@ def _win32_set_clipboard_unicode(text: str) -> bool:
     if not opened:
         _log("win32 clipboard: OpenClipboard failed after retries", "ERROR")
         return False
+    wrote = False
     try:
         if not user32.EmptyClipboard():
             return False
@@ -1395,6 +1396,13 @@ class SmartClipboardOverlay(QWidget):
         self._clipboard_check_timer: QTimer | None = None  # deferred clipboard read (Copy mode)
         self.content_start_line: int = 3  #  configurable: which line to place content
         self.minimized: bool = False
+        # Responsive UI: a single zoom factor scales fonts, paddings and fixed
+        # widget sizes so the whole overlay shrinks to fit small screens.
+        # Persisted across restarts. 1.0 = original INKIDEA dense size.
+        self.ui_scale: float = 1.0
+        self.UI_SCALE_MIN = 0.55
+        self.UI_SCALE_MAX = 1.6
+        self.UI_SCALE_STEP = 0.1
         self.toast: ToastNotification | None = None
         self.concurrent_chapters: int = 1  # how many chapters to paste at once
         self.vocab_file_path: str | None = None  # resolved full path during a vocab session
@@ -1452,6 +1460,9 @@ class SmartClipboardOverlay(QWidget):
 
         # ---- load saved config -----------------------------------------------
         self._load_saved_config()
+
+        # ---- apply saved UI zoom (scales the whole overlay to fit the screen)
+        self._apply_scale(self.ui_scale)
 
         # position: top-right corner
         screen = QApplication.primaryScreen().availableGeometry()
@@ -1672,6 +1683,7 @@ class SmartClipboardOverlay(QWidget):
         root = QVBoxLayout()
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(8)
+        self._root_layout = root  # kept so _apply_scale can rescale margins
 
         # -- title row
         title_row = QHBoxLayout()
@@ -1693,10 +1705,34 @@ class SmartClipboardOverlay(QWidget):
         self.close_btn.setObjectName("closeBtn")
         self.close_btn.setFixedSize(24, 24)
         self.close_btn.clicked.connect(self._quit)
-        
+
+        # -- UI zoom controls (responsive scaling for small screens)
+        self.zoom_out_btn = QPushButton("−")
+        self.zoom_out_btn.setObjectName("zoomBtn")
+        self.zoom_out_btn.setFixedSize(22, 22)
+        self.zoom_out_btn.setToolTip("ย่อขนาด UI ทั้งหมด (Ctrl + ล้อเมาส์ลง)")
+        self.zoom_out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_out_btn.clicked.connect(lambda: self._nudge_ui_scale(-self.UI_SCALE_STEP))
+        self.zoom_label = QPushButton("100%")
+        self.zoom_label.setObjectName("zoomLabel")
+        self.zoom_label.setToolTip("ขนาด UI ปัจจุบัน — คลิกเพื่อรีเซ็ตเป็น 100%")
+        self.zoom_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_label.setFlat(True)
+        self.zoom_label.clicked.connect(lambda: self._set_ui_scale(1.0, save=True))
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn.setObjectName("zoomBtn")
+        self.zoom_in_btn.setFixedSize(22, 22)
+        self.zoom_in_btn.setToolTip("ขยายขนาด UI ทั้งหมด (Ctrl + ล้อเมาส์ขึ้น)")
+        self.zoom_in_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_in_btn.clicked.connect(lambda: self._nudge_ui_scale(self.UI_SCALE_STEP))
+
         title_row.addWidget(self.title_label)
         title_row.addWidget(self.update_btn)
         title_row.addStretch()
+        title_row.addWidget(self.zoom_out_btn)
+        title_row.addWidget(self.zoom_label)
+        title_row.addWidget(self.zoom_in_btn)
+        title_row.addSpacing(8)
         title_row.addWidget(self.minimize_btn)
         title_row.addWidget(self.close_btn)
         root.addLayout(title_row)
@@ -1735,6 +1771,7 @@ class SmartClipboardOverlay(QWidget):
         content_layout = QVBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
+        self._content_layout = content_layout  # kept so _apply_scale can rescale
 
         # -- prompt selector
         prompt_row = QHBoxLayout()
@@ -2024,204 +2061,327 @@ class SmartClipboardOverlay(QWidget):
         self.setLayout(root)
         self.setMinimumWidth(520)
 
+    # ============================================================ SCALING
+    def _px(self, v: float) -> int:
+        """Scale a base pixel value by the current UI zoom (min 1px)."""
+        return max(1, round(v * self.ui_scale))
+
     # ============================================================ STYLING
     def _apply_styles(self):
-        self.setStyleSheet("""
-            QWidget {
+        s = self._px  # every px below is scaled by self.ui_scale
+        self.setStyleSheet(f"""
+            QWidget {{
                 font-family: 'Segoe UI', 'Noto Sans Thai', sans-serif;
-                font-size: 13px;
+                font-size: {s(13)}px;
                 color: #e0e0e0;
-            }
-            #title {
-                font-size: 16px;
+            }}
+            #title {{
+                font-size: {s(16)}px;
                 font-weight: bold;
                 color: #ffffff;
-            }
-            #status {
-                font-size: 14px;
-                padding: 6px 10px;
+            }}
+            #status {{
+                font-size: {s(14)}px;
+                padding: {s(6)}px {s(10)}px;
                 background: rgba(255,255,255,0.07);
-                border-radius: 8px;
+                border-radius: {s(8)}px;
                 color: #90ee90;
-            }
-            #modeBtn {
+            }}
+            #modeBtn {{
                 background: rgba(80,180,255,0.18);
                 border: 1px solid rgba(80,180,255,0.35);
-                border-radius: 8px;
-                padding: 8px 14px;
+                border-radius: {s(8)}px;
+                padding: {s(8)}px {s(14)}px;
                 color: #80d4ff;
-                font-size: 13px;
+                font-size: {s(13)}px;
                 font-weight: bold;
-            }
-            #modeBtn:hover {
+            }}
+            #modeBtn:hover {{
                 background: rgba(80,180,255,0.30);
-            }
-            #actionBtn {
+            }}
+            #actionBtn {{
                 background: rgba(255,255,255,0.12);
                 border: 1px solid rgba(255,255,255,0.18);
-                border-radius: 8px;
-                padding: 6px 14px;
+                border-radius: {s(8)}px;
+                padding: {s(6)}px {s(14)}px;
                 color: #ffffff;
-            }
-            #actionBtn:hover {
+            }}
+            #actionBtn:hover {{
                 background: rgba(255,255,255,0.22);
-            }
-            #controlBtn {
+            }}
+            #controlBtn {{
                 background: rgba(255,255,255,0.10);
                 border: 1px solid rgba(255,255,255,0.15);
-                border-radius: 6px;
-                padding: 6px 12px;
+                border-radius: {s(6)}px;
+                padding: {s(6)}px {s(12)}px;
                 color: #e0e0e0;
-                font-size: 12px;
-            }
-            #controlBtn:hover {
+                font-size: {s(12)}px;
+            }}
+            #controlBtn:hover {{
                 background: rgba(255,255,255,0.20);
-            }
-            #info {
+            }}
+            #info {{
                 color: #aaaaaa;
-                font-size: 12px;
-            }
-            #diagLabel {
+                font-size: {s(12)}px;
+            }}
+            #diagLabel {{
                 color: #cccccc;
-                font-size: 11px;
-                padding: 4px 8px;
+                font-size: {s(11)}px;
+                padding: {s(4)}px {s(8)}px;
                 background: rgba(255,255,255,0.04);
-                border-radius: 6px;
+                border-radius: {s(6)}px;
                 border: 1px solid rgba(255,255,255,0.08);
-            }
-            #legend {
-                font-size: 11px;
+            }}
+            #legend {{
+                font-size: {s(11)}px;
                 color: #888888;
-                margin-top: 4px;
-            }
+                margin-top: {s(4)}px;
+            }}
             QScrollArea#promptListScroll,
             QWidget#promptListViewport,
-            QWidget#promptFilesInner {
+            QWidget#promptFilesInner {{
                 background: transparent;
                 border: none;
-            }
-            #closeBtn {
+            }}
+            #closeBtn {{
                 background: transparent;
                 border: none;
                 color: #888888;
-                font-size: 16px;
-            }
-            #closeBtn:hover {
+                font-size: {s(16)}px;
+            }}
+            #closeBtn:hover {{
                 color: #ff5555;
-            }
-            #minimizeBtn {
+            }}
+            #minimizeBtn {{
                 background: transparent;
                 border: none;
                 color: #888888;
-                font-size: 18px;
+                font-size: {s(18)}px;
                 font-weight: bold;
-            }
-            #minimizeBtn:hover {
+            }}
+            #minimizeBtn:hover {{
                 color: #ffffff;
-            }
-            #updateBtn {
+            }}
+            #zoomBtn {{
+                background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.15);
+                border-radius: {s(5)}px;
+                color: #cfcfcf;
+                font-size: {s(14)}px;
+                font-weight: bold;
+                padding: 0;
+            }}
+            #zoomBtn:hover {{
+                background: rgba(255,255,255,0.20);
+                color: #ffffff;
+            }}
+            #zoomLabel {{
+                color: #aaaaaa;
+                font-size: {s(11)}px;
+                min-width: {s(34)}px;
+            }}
+            #updateBtn {{
                 background: #2d5a2d;
                 color: #aaffaa;
                 border: 1px solid #3d7a3d;
-                border-radius: 8px;
-                padding: 1px 8px;
-                margin-left: 8px;
-                font-size: 11px;
+                border-radius: {s(8)}px;
+                padding: {s(1)}px {s(8)}px;
+                margin-left: {s(8)}px;
+                font-size: {s(11)}px;
                 font-weight: bold;
-            }
-            #updateBtn:hover {
+            }}
+            #updateBtn:hover {{
                 background: #3d7a3d;
                 color: #ffffff;
-            }
-            QCheckBox {
-                spacing: 8px;
+            }}
+            QCheckBox {{
+                spacing: {s(8)}px;
                 color: #e0e0e0;
-                padding: 2px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
+                padding: {s(2)}px;
+            }}
+            QCheckBox::indicator {{
+                width: {s(16)}px;
+                height: {s(16)}px;
                 border: 1px solid #6a7a8a;
-                border-radius: 3px;
+                border-radius: {s(3)}px;
                 background: rgba(255,255,255,0.05);
-            }
-            QCheckBox::indicator:hover {
+            }}
+            QCheckBox::indicator:hover {{
                 border-color: #4a9eff;
                 background: rgba(74,158,255,0.10);
-            }
-            QCheckBox::indicator:checked {
+            }}
+            QCheckBox::indicator:checked {{
                 background: #2680eb;
                 border: 1px solid #4a9eff;
                 image: none;
-            }
-            QCheckBox::indicator:checked:hover {
+            }}
+            QCheckBox::indicator:checked:hover {{
                 background: #3a8df0;
-            }
-            QRadioButton {
-                spacing: 8px;
+            }}
+            QRadioButton {{
+                spacing: {s(8)}px;
                 color: #e0e0e0;
-                padding: 2px;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
+                padding: {s(2)}px;
+            }}
+            QRadioButton::indicator {{
+                width: {s(16)}px;
+                height: {s(16)}px;
                 border: 1px solid #6a7a8a;
-                border-radius: 8px;
+                border-radius: {s(8)}px;
                 background: rgba(255,255,255,0.05);
-            }
-            QRadioButton::indicator:hover {
+            }}
+            QRadioButton::indicator:hover {{
                 border-color: #4a9eff;
                 background: rgba(74,158,255,0.10);
-            }
-            QRadioButton::indicator:checked {
+            }}
+            QRadioButton::indicator:checked {{
                 background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
                     stop:0 #ffffff, stop:0.40 #ffffff, stop:0.45 #2680eb, stop:1 #2680eb);
                 border: 1px solid #4a9eff;
-            }
-            QRadioButton::indicator:checked:hover {
+            }}
+            QRadioButton::indicator:checked:hover {{
                 border-color: #6ab2ff;
-            }
-            #numberInput {
+            }}
+            #numberInput {{
                 background: rgba(255,255,255,0.08);
                 border: 1px solid rgba(255,255,255,0.20);
-                border-radius: 6px;
-                padding: 4px 8px;
+                border-radius: {s(6)}px;
+                padding: {s(4)}px {s(8)}px;
                 color: #ffffff;
-                font-size: 12px;
+                font-size: {s(12)}px;
                 selection-background-color: #2680eb;
-            }
-            #numberInput:focus {
+            }}
+            #numberInput:focus {{
                 border: 1px solid #4a9eff;
                 background: rgba(74,158,255,0.10);
-            }
-            #addBtn {
+            }}
+            #addBtn {{
                 background: rgba(80,200,120,0.18);
                 border: 1px solid rgba(80,200,120,0.45);
-                border-radius: 6px;
-                padding: 6px 12px;
+                border-radius: {s(6)}px;
+                padding: {s(6)}px {s(12)}px;
                 color: #8eecb0;
-                font-size: 12px;
+                font-size: {s(12)}px;
                 font-weight: bold;
-            }
-            #addBtn:hover {
+            }}
+            #addBtn:hover {{
                 background: rgba(80,200,120,0.32);
                 color: #ffffff;
-            }
-            #rowRemoveBtn {
+            }}
+            #rowRemoveBtn {{
                 background: rgba(255,80,80,0.10);
                 border: 1px solid rgba(255,80,80,0.30);
-                border-radius: 4px;
+                border-radius: {s(4)}px;
                 color: #ff8a8a;
-                font-size: 11px;
+                font-size: {s(11)}px;
                 font-weight: bold;
                 padding: 0;
-            }
-            #rowRemoveBtn:hover {
+            }}
+            #rowRemoveBtn:hover {{
                 background: rgba(255,80,80,0.30);
                 color: #ffffff;
                 border-color: #ff5555;
-            }
+            }}
         """)
+
+    def _apply_scale(self, scale: float, *, save: bool = False):
+        """Apply a UI zoom factor: rescale fonts/paddings (via stylesheet) plus
+        every fixed widget size and layout margin, then resize the window to fit.
+        This is the 'scale the whole UI' behaviour (not a scroll area)."""
+        scale = max(self.UI_SCALE_MIN, min(self.UI_SCALE_MAX, round(scale, 3)))
+        self.ui_scale = scale
+        s = self._px
+
+        # Stylesheet (fonts, paddings, indicator sizes) — scaled.
+        self._apply_styles()
+        # Re-apply the mode button's accent style (Copy/Vocab) at the new scale.
+        self._apply_mode_btn_style()
+
+        # Fixed widget sizes.
+        for btn in (self.minimize_btn, self.close_btn):
+            btn.setFixedSize(s(24), s(24))
+        for btn in (self.zoom_out_btn, self.zoom_in_btn):
+            btn.setFixedSize(s(22), s(22))
+        self.range_from.setFixedWidth(s(70))
+        self.range_to.setFixedWidth(s(70))
+        self.jump_input.setFixedWidth(s(80))
+        self.vocab_filename_input.setFixedWidth(s(200))
+        for btn in (self.concurrent_minus_btn, self.concurrent_plus_btn,
+                    self.line_minus_btn, self.line_plus_btn):
+            btn.setFixedWidth(s(32))
+        small_label_css = f"font-weight: bold; min-width: {s(20)}px;"
+        self.concurrent_value_label.setStyleSheet(small_label_css)
+        self.line_value_label.setStyleSheet(small_label_css)
+
+        # Layout margins / spacing.
+        self._root_layout.setContentsMargins(s(18), s(14), s(18), s(14))
+        self._root_layout.setSpacing(s(8))
+        self._content_layout.setSpacing(s(8))
+        if hasattr(self, "prompt_rows_layout"):
+            self.prompt_rows_layout.setContentsMargins(s(6), s(6), s(6), s(6))
+            self.prompt_rows_layout.setSpacing(s(6))
+
+        # Window minimum width scales too so it can actually get small.
+        self.setMinimumWidth(s(520))
+
+        # Per-row remove buttons live in the scroll area — rescale + re-measure.
+        self._rescale_prompt_rows()
+        self._resize_prompt_scroll_area()
+
+        if hasattr(self, "zoom_label"):
+            self.zoom_label.setText(f"{round(self.ui_scale * 100)}%")
+
+        self.adjustSize()
+        if save:
+            self._save_config()
+
+    def _rescale_prompt_rows(self):
+        """Resize the ✕ remove buttons inside the prompt list to the new scale."""
+        if not hasattr(self, "prompt_rows_layout"):
+            return
+        size = self._px(22)
+        for i in range(self.prompt_rows_layout.count()):
+            item = self.prompt_rows_layout.itemAt(i)
+            w = item.widget() if item else None
+            if w is None:
+                continue
+            for btn in w.findChildren(QPushButton):
+                if btn.objectName() == "rowRemoveBtn":
+                    btn.setFixedSize(size, size)
+
+    def _apply_mode_btn_style(self):
+        """Accent style for the mode button per current mode. Only colours are
+        set here — paddings/radius/font come from the scaled #modeBtn rule."""
+        if self.mode == self.MODE_COPY:
+            self.mode_btn.setStyleSheet(
+                "#modeBtn { background: rgba(255,160,50,0.20); "
+                "border: 1px solid rgba(255,160,50,0.40); color: #ffb347; }"
+                "#modeBtn:hover { background: rgba(255,160,50,0.35); }"
+            )
+        elif self.mode == self.MODE_VOCAB:
+            self.mode_btn.setStyleSheet(
+                "#modeBtn { background: rgba(180,100,255,0.20); "
+                "border: 1px solid rgba(180,100,255,0.40); color: #c896ff; }"
+                "#modeBtn:hover { background: rgba(180,100,255,0.35); }"
+            )
+        else:
+            self.mode_btn.setStyleSheet("")
+
+    def _nudge_ui_scale(self, delta: float):
+        self._set_ui_scale(self.ui_scale + delta, save=True)
+
+    def _set_ui_scale(self, scale: float, *, save: bool = False):
+        self._apply_scale(scale, save=save)
+
+    def wheelEvent(self, event):
+        # Ctrl + mouse wheel = zoom the whole UI (matches editors/browsers).
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            dy = event.angleDelta().y()
+            if dy:
+                self._nudge_ui_scale(self.UI_SCALE_STEP if dy > 0 else -self.UI_SCALE_STEP)
+                event.accept()
+                return
+        super().wheelEvent(event)
 
     # override paintEvent so we get the rounded dark translucent background
     def paintEvent(self, event):
@@ -2336,6 +2496,10 @@ class SmartClipboardOverlay(QWidget):
         )
         self.staged_ms_after_text_paste = max(min_after_text, min(int(cfg.get("staged_ms_after_text_paste", default_after_text)), 8000))
         self.staged_ms_simple_paste = max(40, min(int(cfg.get("staged_ms_simple_paste", default_simple)), 3000))
+        try:
+            self.ui_scale = max(self.UI_SCALE_MIN, min(self.UI_SCALE_MAX, float(cfg.get("ui_scale", 1.0))))
+        except (TypeError, ValueError):
+            self.ui_scale = 1.0
         self._try_init()
 
     def _save_config(self):
@@ -2355,6 +2519,7 @@ class SmartClipboardOverlay(QWidget):
             "staged_ms_clipboard_to_ctrl_v": self.staged_ms_clipboard_to_ctrl_v,
             "staged_ms_after_text_paste": self.staged_ms_after_text_paste,
             "staged_ms_simple_paste": self.staged_ms_simple_paste,
+            "ui_scale": round(self.ui_scale, 3),
         })
 
     # ============================================================ FILE SELECTORS
@@ -2847,7 +3012,7 @@ class SmartClipboardOverlay(QWidget):
             remove_btn = QPushButton("✕")
             remove_btn.setObjectName("rowRemoveBtn")
             remove_btn.setToolTip("ลบไฟล์นี้ออกจากรายการ (ไฟล์ต้นฉบับไม่ถูกลบ)")
-            remove_btn.setFixedSize(22, 22)
+            remove_btn.setFixedSize(self._px(22), self._px(22))
             remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             remove_btn.clicked.connect(lambda _checked=False, dn=display_name: self._remove_prompt_file(dn))
 
@@ -2867,8 +3032,8 @@ class SmartClipboardOverlay(QWidget):
             self.prompt_list_scroll.setFixedHeight(0)
             return
         self.prompt_files_inner.adjustSize()
-        layout_margins = 12  # 6 top + 6 bottom from setContentsMargins
-        row_spacing = 6      # from setSpacing
+        layout_margins = self._px(6) * 2  # top + bottom from setContentsMargins
+        row_spacing = self._px(6)         # from setSpacing
         rows_to_show = min(n, self.PROMPT_ROWS_BEFORE_SCROLL)
         # Measure the actual heights of the first rows_to_show rows.
         row_heights: list[int] = []
@@ -2876,12 +3041,12 @@ class SmartClipboardOverlay(QWidget):
             item = self.prompt_rows_layout.itemAt(i)
             w = item.widget() if item else None
             if w is not None:
-                row_heights.append(max(w.sizeHint().height(), 28))
+                row_heights.append(max(w.sizeHint().height(), self._px(28)))
         if not row_heights:
             self.prompt_list_scroll.setFixedHeight(0)
             return
         total = sum(row_heights) + row_spacing * (len(row_heights) - 1) + layout_margins
-        self.prompt_list_scroll.setFixedHeight(total + 4)  # small fudge for borders
+        self.prompt_list_scroll.setFixedHeight(total + self._px(4))  # fudge for borders
 
     @staticmethod
     def _read_local_file_as_text(path: str, label: str) -> str:
@@ -2929,25 +3094,17 @@ class SmartClipboardOverlay(QWidget):
         if self.mode == self.MODE_PASTE:
             self.mode = self.MODE_COPY
             self.mode_btn.setText("📝 [COPY MODE]  Clipboard text → .txt files")
-            self.mode_btn.setStyleSheet(
-                "#modeBtn { background: rgba(255,160,50,0.20); border: 1px solid rgba(255,160,50,0.40); "
-                "border-radius: 8px; padding: 8px 14px; color: #ffb347; font-size: 13px; font-weight: bold; }"
-                "#modeBtn:hover { background: rgba(255,160,50,0.35); }"
-            )
+            self._apply_mode_btn_style()
             self._start_clipboard_monitor()
         elif self.mode == self.MODE_COPY:
             self.mode = self.MODE_VOCAB
             self.mode_btn.setText(f"📖 [VOCAB MODE]  Clipboard → {self.vocab_filename} (append)")
-            self.mode_btn.setStyleSheet(
-                "#modeBtn { background: rgba(180,100,255,0.20); border: 1px solid rgba(180,100,255,0.40); "
-                "border-radius: 8px; padding: 8px 14px; color: #c896ff; font-size: 13px; font-weight: bold; }"
-                "#modeBtn:hover { background: rgba(180,100,255,0.35); }"
-            )
+            self._apply_mode_btn_style()
             self._init_vocab_mode()
         else:
             self.mode = self.MODE_PASTE
             self.mode_btn.setText("📋 [PASTE MODE]  Prompt+Chapter → Clipboard")
-            self.mode_btn.setStyleSheet("")
+            self._apply_mode_btn_style()
             self._stop_clipboard_monitor()
         self.paused = False
         self.pause_btn.setText("⏸ Pause")
@@ -3100,10 +3257,8 @@ class SmartClipboardOverlay(QWidget):
         self._show_toast(f"💾 SAVED: {prog}", "copy")
 
         self.status_label.setText(f"[SAVED] {prog}")
-        self.status_label.setStyleSheet(
-            "#status { color: #80ff80; background: rgba(255,255,255,0.07); "
-            "border-radius: 8px; padding: 6px 10px; font-size: 14px; }"
-        )
+        # Colour-only override: padding/radius/font come from the scaled #status rule.
+        self.status_label.setStyleSheet("#status { color: #80ff80; }")
 
         self.current_index += chapters_in_round
         if self.current_index < len(self.chapter_files):
@@ -3146,11 +3301,8 @@ class SmartClipboardOverlay(QWidget):
         self.status_label.setText(
             f"[SAVED] Vocab entry #{self.vocab_entry_count}"
         )
-        self.status_label.setStyleSheet(
-            "#status { color: #c896ff; background: rgba(255,255,255,0.07); "
-            "border-radius: 8px; padding: 6px 10px; font-size: 14px; }"
-        )
-        
+        self.status_label.setStyleSheet("#status { color: #c896ff; }")
+
         QTimer.singleShot(1500, self._update_status)
 
     # ============================================================ PASTE MODE CLIPBOARD
@@ -3485,10 +3637,7 @@ class SmartClipboardOverlay(QWidget):
         if self.paused:
             self.pause_btn.setText("▶ Resume")
             self.status_label.setText("[PAUSED]  Press F12 or Resume to continue")
-            self.status_label.setStyleSheet(
-                "#status { color: #ffcc00; background: rgba(255,255,255,0.07); "
-                "border-radius: 8px; padding: 6px 10px; font-size: 14px; }"
-            )
+            self.status_label.setStyleSheet("#status { color: #ffcc00; }")
         else:
             self.pause_btn.setText("⏸ Pause")
             self.status_label.setStyleSheet("")
