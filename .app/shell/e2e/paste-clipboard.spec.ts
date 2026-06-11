@@ -203,6 +203,50 @@ test.describe('INKCOPY — clipboard pre-load (Python-style)', () => {
   })
 })
 
+test.describe('INKCOPY — staged mixed auto-switch (text → files → synthetic → advance)', () => {
+  test('prompt-text + chapter-file: one paste runs the full swap and advances exactly once', async ({ window }) => {
+    // Mixed: prompt as TEXT, chapter as FILE → the "true auto-switch" path.
+    await seed(window, { promptAsText: { 'system-prompt.txt': true, 'glossary.txt': true }, chapterAsText: false, concurrent: 1 })
+    // Shrink the staged delays so the test is fast (defaults are 450ms each on mac).
+    await window.evaluate(() => {
+      ;(window as any).__inkcopyStoreForTests.setState({
+        stagedMsAfterUserPaste: 10,
+        stagedMsClipboardToCtrlV: 10,
+        stagedMsAfterTextPaste: 10,
+      })
+    })
+    await waitForPreload(window)
+
+    // Pre-paste: clipboard holds the prompt TEXT and the chapter file is staged.
+    const before = await window.evaluate(() => {
+      const s = (window as any).__inkcopyStoreForTests.getState()
+      return { staged: s.stagedPendingFilePaths, ci: s.currentIndex }
+    })
+    expect(before.ci).toBe(0)
+    expect(before.staged).toHaveLength(1)
+    expect(before.staged[0]).toContain('chapter0001.txt')
+    expect(await readClipboard(window)).toContain('professional Thai novel translator')
+
+    // One Cmd+V → swap to files → synthetic paste (e2e-stubbed ok) → advance.
+    await window.evaluate(async () => { await (window as any).inkcopy.hotkey['_testFirePaste']() })
+    await window.waitForTimeout(500)
+
+    const after = await window.evaluate(() => {
+      const s = (window as any).__inkcopyStoreForTests.getState()
+      return { staged: s.stagedPendingFilePaths, ci: s.currentIndex, active: s.stagedSequenceActive }
+    })
+    // currentIndex only advances inside finishAdvance, which runs AFTER the
+    // swap + synthetic paste succeed — so ci===1 proves the whole chain ran,
+    // and ===1 (not 2) proves no double-advance.
+    expect(after.ci).toBe(1)
+    expect(after.active).toBe(false)
+    // Re-armed for the next round: chapter 2 staged, prompt text on clipboard.
+    expect(after.staged).toHaveLength(1)
+    expect(after.staged[0]).toContain('chapter0002.txt')
+    expect(await readClipboard(window)).toContain('professional Thai novel translator')
+  })
+})
+
 test.describe('INKCOPY — auto-register hotkeys when folders ready', () => {
   test('register button no longer exists', async ({ window }) => {
     await expect(window.getByTestId('register-hotkey')).toHaveCount(0)

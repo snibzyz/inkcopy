@@ -1,0 +1,4 @@
+﻿Glossary (keep these translations consistent):
+อาคม = Arkom (protagonist)
+นพเก้า = Noppakao (city)
+ดาบเทพ = Divine Blade

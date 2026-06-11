@@ -49,16 +49,26 @@ function createMainWindow() {
   // with hundreds of chapters loaded.
   const { screen } = require('electron')
   const primary = screen.getPrimaryDisplay().workArea
-  const winWidth = 720
-  const winHeight = Math.max(640, primary.height - 24)
+  const isMac = process.platform === 'darwin'
+  // macOS: the full-height right-edge overlay felt oversized, so default to a
+  // compact, locked window centered on screen. Windows/Linux keep the tall
+  // right-edge overlay that grows with the display.
+  const winWidth = isMac ? 480 : 720
+  const winHeight = isMac ? Math.min(680, primary.height - 80) : Math.max(640, primary.height - 24)
+  const winX = isMac
+    ? primary.x + Math.round((primary.width - winWidth) / 2)
+    : primary.x + primary.width - winWidth - 24
+  const winY = isMac
+    ? primary.y + Math.round((primary.height - winHeight) / 2)
+    : primary.y + 24
 
   mainWindow = new BrowserWindow({
     width: winWidth,
     height: winHeight,
-    minWidth: 520,
+    minWidth: isMac ? 420 : 520,
     minHeight: 44,
-    x: primary.x + primary.width - winWidth - 24,
-    y: primary.y + 24,
+    x: winX,
+    y: winY,
     frame: false,
     alwaysOnTop: true,
     skipTaskbar: false,
@@ -69,7 +79,8 @@ function createMainWindow() {
     backgroundColor: '#00000000',
     hasShadow: true,
     roundedCorners: true,
-    resizable: true,
+    // macOS: lock the compact default size; resizable on Windows/Linux.
+    resizable: !isMac,
     show: false,
     icon: path.join(__dirname, '..', 'public', 'logo.ico'),
     autoHideMenuBar: true,

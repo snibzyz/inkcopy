@@ -156,9 +156,13 @@ function registerClipboardIpc() {
     return writeFileUrls(paths)
   })
 
-  // Mixed: write file URLs first (the native format), then `clipboard.write`
-  // with text augments the pasteboard's text fallback so a receiver that
-  // doesn't understand file URLs still gets the joined chapter text.
+  // Mixed text+files in a SINGLE clipboard transaction is impossible on macOS:
+  // Electron's clipboard.write()/writeFiles() each call NSPasteboard
+  // clearContents first, so a text write would discard the file URLs (and vice
+  // versa). The live "true auto-switch" mixed paste therefore uses the STAGED
+  // flow instead (renderer writes text, then on the user's Cmd+V the main
+  // process swaps to writeFiles + a synthetic paste). This handler is kept only
+  // as a file-only fallback; it never appends text on top of the file URLs.
   ipcMain.handle('clipboard:writeMixed', (_e, payload) => {
     const text = String(payload?.text ?? '')
     const paths = Array.isArray(payload?.files) ? payload.files.map(String) : []
@@ -173,19 +177,6 @@ function registerClipboardIpc() {
     }
 
     const filesResult = writeFileUrls(paths)
-    if (text) {
-      // Append text without clobbering the file URLs we just wrote.
-      // `clipboard.write({ text })` merges with existing pasteboard entries
-      // on macOS; on Windows it actually clears prior formats, so on Win
-      // we accept text-loss and rely on the staged Cmd+V flow (TODO).
-      try {
-        if (process.platform === 'darwin') {
-          clipboard.write({ text }, 'clipboard')
-        }
-      } catch (err) {
-        log.warn('mixed text append failed', { error: err && err.message })
-      }
-    }
     return { ok: filesResult.ok, kind: `mixed-${filesResult.kind}` }
   })
 }

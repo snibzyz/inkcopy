@@ -19,8 +19,13 @@ config.json
 # Editor / OS
 Thumbs.db
 Desktop.ini
+.DS_Store
 .vscode/
 .idea/
+
+# Generated COPY-mode output from the mock fixtures (keep the dir, not its output)
+mock-data/output/*
+!mock-data/output/.gitkeep
 
 # Node / Electron (.app/shell)
 node_modules/

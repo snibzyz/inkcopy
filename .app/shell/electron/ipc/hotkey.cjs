@@ -10,7 +10,7 @@
 //             System Settings → Privacy & Security. Without it `uIOhook.start()`
 //             throws, surfaced to the renderer via `{ ok: false, reason }`.
 
-const { ipcMain } = require('electron')
+const { ipcMain, systemPreferences } = require('electron')
 const { execFile } = require('child_process')
 const { createLogger } = require('../helpers/logger.cjs')
 
@@ -115,6 +115,27 @@ async function sendSyntheticPaste() {
   _syntheticMuteUntil = Date.now() + 900
   if (process.env.INKCOPY_E2E === '1') return { ok: true, reason: 'e2e-stub' }
 
+  // Prefer uiohook's native keyTap. It injects the keystroke at the HID layer
+  // (like the real key) and needs ONLY the Accessibility grant uiohook already
+  // relies on to listen — NOT the separate Automation/Apple-Events consent that
+  // `osascript "tell System Events to keystroke"` requires. On macOS that
+  // osascript path fails effectively silently the first time (no
+  // NSAppleEventsUsageDescription, denial only logged), which is the #1 reason
+  // the auto-switch file paste never lands. keyTap sidesteps that entirely.
+  if (uioh && typeof uioh.uIOhook.keyTap === 'function') {
+    try {
+      const K = uioh.UiohookKey
+      const modifier = process.platform === 'darwin' ? K.Meta : K.Ctrl
+      uioh.uIOhook.keyTap(K.V, [modifier])
+      log.info('synthetic paste via uiohook keyTap')
+      return { ok: true, reason: 'uiohook-keyTap' }
+    } catch (err) {
+      log.warn('uiohook keyTap failed — falling back to shell injection', {
+        error: err && err.message,
+      })
+    }
+  }
+
   if (process.platform === 'darwin') {
     return await execFileWithTimeout('/usr/bin/osascript', [
       '-e',
@@ -137,6 +158,20 @@ async function sendSyntheticPaste() {
 function startListener() {
   if (!uioh) return { ok: false, reason: 'uiohook-napi not loaded' }
   if (_started) return { ok: true, reason: 'already started' }
+  // macOS: uIOhook.start() succeeds even when Accessibility is denied, then
+  // delivers ZERO key events — the app looks "registered" but no hotkey ever
+  // fires. Surface the missing grant so the renderer can prompt the user.
+  if (process.platform === 'darwin') {
+    try {
+      if (systemPreferences.isTrustedAccessibilityClient(false) === false) {
+        _stats.lastError = 'accessibility-not-trusted'
+        log.warn('Accessibility not granted — hotkeys will not fire until granted')
+        return { ok: false, reason: 'accessibility-not-trusted' }
+      }
+    } catch (err) {
+      log.warn('accessibility pre-check failed', { error: err && err.message })
+    }
+  }
   try {
     uioh.uIOhook.on('keydown', handleKeyDown)
     uioh.uIOhook.start()

@@ -185,11 +185,18 @@ export default function App() {
         pp: s.promptPasteModes,
         pf: s.promptFiles.map((f) => f.path),
         cf: s.chapterFiles.map((f) => f.path),
+        // Re-arm once the staged swap finishes (sa: true -> false), and treat
+        // sa as part of the key so the guard below re-runs at the right time.
+        sa: s.stagedSequenceActive,
       })
     }
 
     const writeIfNeeded = async () => {
       if (cancelled || inFlight) return
+      // Never touch the clipboard while a staged text->files->synthetic-paste
+      // sequence is mid-flight — overwriting the armed file URLs before the
+      // synthetic Cmd+V lands would paste the wrong thing / advance too early.
+      if (useStore.getState().stagedSequenceActive) return
       const key = pendingKey || fieldsKey()
       pendingKey = ''
       if (key === lastWritten) return

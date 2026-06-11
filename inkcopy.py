@@ -55,6 +55,7 @@ check_modules()
 
 import json
 import re
+import time
 import unicodedata
 from pathlib import Path
 
@@ -215,6 +216,111 @@ def _macos_input_monitoring_trusted() -> bool | None:
         return None
     except Exception:
         return None
+
+
+_AX_PROMPTED = False
+
+
+def _macos_prompt_accessibility() -> bool | None:
+    """Trigger the macOS "grant Accessibility" system dialog (once per run).
+
+    Without Accessibility/Input Monitoring the global key listener registers
+    successfully but silently receives zero events — the #1 reason INKCOPY
+    "looks broken" on macOS. AXIsProcessTrustedWithOptions with the prompt key
+    asks the OS to show its own grant dialog; it is non-blocking and a no-op if
+    already trusted. Returns the trusted state, or None off-darwin / on failure.
+    """
+    global _AX_PROMPTED
+    if sys.platform != "darwin":
+        return None
+    if _AX_PROMPTED:
+        return _macos_accessibility_trusted()
+    _AX_PROMPTED = True
+    try:
+        from ApplicationServices import (
+            AXIsProcessTrustedWithOptions,
+            kAXTrustedCheckOptionPrompt,
+        )
+        trusted = bool(AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True}))
+        _log(f"AX prompt shown (trusted={trusted})")
+        return trusted
+    except Exception as exc:
+        _log(f"AX prompt failed: {exc}", "WARN")
+        return _macos_accessibility_trusted()
+
+
+def _macos_make_floating_overlay(widget) -> None:
+    """Keep a frameless overlay visible above other apps on macOS.
+
+    Qt.WindowType.Tool maps to an NSPanel whose hidesOnDeactivate defaults to
+    YES, so the overlay VANISHES whenever another app (e.g. Chrome) becomes
+    frontmost — which is precisely when INKCOPY needs to stay on screen. Force
+    the native window to stay put, float above normal windows, and join every
+    Space (incl. a fullscreen browser). No-op off darwin / on failure.
+    """
+    if sys.platform != "darwin":
+        return
+    # Only the real Cocoa platform has an NSWindow behind winId(); under the
+    # offscreen/minimal QPA plugins winId() is NOT an NSView pointer, so
+    # wrapping it and calling -window would dereference garbage and crash the
+    # process (a native segfault no try/except can catch).
+    if QApplication.platformName() != "cocoa":
+        return
+    try:
+        import objc
+        from AppKit import (
+            NSScreenSaverWindowLevel,
+            NSWindowCollectionBehaviorCanJoinAllSpaces,
+            NSWindowCollectionBehaviorFullScreenAuxiliary,
+            NSWindowCollectionBehaviorIgnoresCycle,
+            NSWindowCollectionBehaviorStationary,
+        )
+
+        view = objc.objc_object(c_void_p=int(widget.winId()))
+        win = view.window()
+        if win is None:
+            return
+        win.setHidesOnDeactivate_(False)
+        # Screen-saver level (1000) is high enough to sit above another app's
+        # FULLSCREEN window — status (25) and floating (3) were composited below
+        # the fullscreen Space, so the overlay only showed on the desktop Space.
+        win.setLevel_(NSScreenSaverWindowLevel)
+        win.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorIgnoresCycle
+        )
+    except Exception as exc:
+        _log(f"macOS overlay window config failed: {exc}", "WARN")
+
+
+def _macos_set_accessory_policy() -> None:
+    """Run INKCOPY as a background 'accessory' app on macOS so the overlay can
+    float over OTHER apps' native-fullscreen Spaces.
+
+    A regular (Dock-icon) app's windows are NEVER admitted to another app's
+    fullscreen Space, regardless of window level — that's why screen-saver level
+    + canJoinAllSpaces alone wasn't enough. Only an accessory/agent app can.
+    Tradeoff: no Dock icon and no Cmd-Tab entry (quit via the overlay's ✕).
+    No-op off the real cocoa platform (avoids touching a non-existent NSApp).
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        if QApplication.platformName() != "cocoa":
+            return
+        from AppKit import (
+            NSApplication,
+            NSApplicationActivationPolicyAccessory,
+        )
+
+        NSApplication.sharedApplication().setActivationPolicy_(
+            NSApplicationActivationPolicyAccessory
+        )
+        _log("macOS activation policy set to accessory (overlay floats over fullscreen)")
+    except Exception as exc:
+        _log(f"macOS accessory policy failed: {exc}", "WARN")
 
 
 def _running_from_macos_dmg() -> bool:
@@ -1150,6 +1256,14 @@ else:
                 # Live cmd-held state is queried from NSEvent.modifierFlags(),
                 # which always reflects the actual hardware state.
                 self._controller = _pynkb.Controller()
+                # Dedup window: the NSEvent global monitor AND the CGEventTap both
+                # observe the same physical key press and BOTH call _handle_keycode.
+                # Without this, one Cmd+V / F9 / F10 / F12 fires its action twice —
+                # double-advancing chapters / double-stepping navigation on macOS.
+                # Two observers deliver the same press within a few ms; 60ms safely
+                # collapses the duplicate while never swallowing a real re-press.
+                self._dedup_window_s = 0.06
+                self._last_action_ts: dict[int, float] = {}
                 self._on_paste = None
                 self._on_prev = None
                 self._on_next = None
@@ -1269,6 +1383,23 @@ else:
 
             def _handle_keycode(self, kc: int, cmd_held: bool, source: str):
                 try:
+                    # Collapse the duplicate the second observer (NSEvent monitor /
+                    # CGEventTap) reports for the same physical press. Only the
+                    # actionable keys are deduped, keyed by keycode.
+                    is_action = (
+                        (kc == _MAC_KC_V and cmd_held)
+                        or kc in (_MAC_KC_F9, _MAC_KC_F10, _MAC_KC_F12)
+                    )
+                    if is_action:
+                        now = time.monotonic()
+                        last = self._last_action_ts.get(kc, 0.0)
+                        if (now - last) < self._dedup_window_s:
+                            _log(
+                                f"deduped duplicate key kc={kc} from {source} "
+                                f"({(now - last) * 1000:.0f}ms since last)"
+                            )
+                            return
+                        self._last_action_ts[kc] = now
                     if kc == _MAC_KC_V:
                         self.stats["v_keys_seen"] += 1
                         if cmd_held:
@@ -1378,6 +1509,10 @@ class SmartClipboardOverlay(QWidget):
     def __init__(self):
         super().__init__()
 
+        # macOS: become a background accessory app so the overlay can float over
+        # other apps' fullscreen Spaces (see _macos_set_accessory_policy).
+        _macos_set_accessory_policy()
+
         # ---- state ----------------------------------------------------------
         self.prompt_folder: str | None = None
         self.prompt_files: list[tuple[str, str]] = []  # (display_name, path_for_url); .lnk resolved
@@ -1394,6 +1529,12 @@ class SmartClipboardOverlay(QWidget):
         self._ignore_clipboard_change: bool = False
         self._last_clipboard_text: str = ""
         self._clipboard_check_timer: QTimer | None = None  # deferred clipboard read (Copy mode)
+        # macOS has no OS pasteboard-changed notification and Qt's QClipboard
+        # .dataChanged often never fires while a non-activating Tool overlay sits
+        # in the background — which is the entire COPY/VOCAB use case (user copies
+        # in ANOTHER app). Poll NSPasteboard.changeCount as a fallback on darwin.
+        self._mac_pasteboard_poll_timer: QTimer | None = None
+        self._last_pasteboard_change_count: int = -1
         self.content_start_line: int = 3  #  configurable: which line to place content
         self.minimized: bool = False
         # Responsive UI: a single zoom factor scales fonts, paddings and fixed
@@ -1464,12 +1605,22 @@ class SmartClipboardOverlay(QWidget):
         # ---- apply saved UI zoom (scales the whole overlay to fit the screen)
         self._apply_scale(self.ui_scale)
 
-        # position: top-right corner
+        # position: centered on the primary screen
         screen = QApplication.primaryScreen().availableGeometry()
         self.adjustSize()
-        self.move(screen.width() - self.width() - 24, 24)
+        self.move(
+            screen.x() + (screen.width() - self.width()) // 2,
+            screen.y() + (screen.height() - self.height()) // 2,
+        )
 
         self.show()
+        # macOS: keep the overlay visible when Chrome (etc.) is focused — a
+        # Qt::Tool panel otherwise hides on deactivate and the user "sees no
+        # overlay" the moment they click into the target app. Re-apply shortly
+        # after: Qt finishes realizing the NSWindow asynchronously and can reset
+        # the level/behavior we set here.
+        _macos_make_floating_overlay(self)
+        QTimer.singleShot(600, lambda: _macos_make_floating_overlay(self))
 
         # ---- update check (background, non-blocking) -------------------------
         self._update_url = None
@@ -1765,6 +1916,34 @@ class SmartClipboardOverlay(QWidget):
         self._row_diag = QWidget()
         self._row_diag.setLayout(diag_row)
         root.addWidget(self._row_diag)
+
+        # -- compact controls shown ONLY while minimized, so prev / pause / next
+        #    / reset stay usable without expanding the overlay. The full controls
+        #    live inside content_widget (hidden when minimized), so these mirror
+        #    them and call the same handlers.
+        self.mini_prev_btn = QPushButton("◀ Prev")
+        self.mini_prev_btn.setObjectName("controlBtn")
+        self.mini_prev_btn.clicked.connect(self._go_prev)
+        self.mini_pause_btn = QPushButton("⏸ Pause")
+        self.mini_pause_btn.setObjectName("controlBtn")
+        self.mini_pause_btn.clicked.connect(self._toggle_pause)
+        self.mini_next_btn = QPushButton("Next ▶")
+        self.mini_next_btn.setObjectName("controlBtn")
+        self.mini_next_btn.clicked.connect(self._go_next)
+        self.mini_reset_btn = QPushButton("↺")
+        self.mini_reset_btn.setObjectName("controlBtn")
+        self.mini_reset_btn.setToolTip("Reset to first chapter")
+        self.mini_reset_btn.clicked.connect(self._reset_index)
+        mini_row = QHBoxLayout()
+        mini_row.setContentsMargins(0, 0, 0, 0)
+        mini_row.addWidget(self.mini_prev_btn)
+        mini_row.addWidget(self.mini_pause_btn)
+        mini_row.addWidget(self.mini_next_btn)
+        mini_row.addWidget(self.mini_reset_btn)
+        self._mini_controls = QWidget()
+        self._mini_controls.setLayout(mini_row)
+        self._mini_controls.hide()  # only visible while minimized
+        root.addWidget(self._mini_controls)
 
         # Container for collapsible content
         self.content_widget = QWidget()
@@ -3107,7 +3286,7 @@ class SmartClipboardOverlay(QWidget):
             self._apply_mode_btn_style()
             self._stop_clipboard_monitor()
         self.paused = False
-        self.pause_btn.setText("⏸ Pause")
+        self._set_pause_text("⏸ Pause")
         self._apply_mode_visibility()
         self._update_status()
 
@@ -3152,6 +3331,11 @@ class SmartClipboardOverlay(QWidget):
             return
         self.hotkeys_registered = True
 
+        # macOS: ask the OS to show its Accessibility grant dialog on first
+        # registration so hotkeys don't silently no-op when permission is missing.
+        if sys.platform == "darwin":
+            _macos_prompt_accessibility()
+
         _hotkey_backend.register(
             on_paste=self._kb_paste_handler,
             on_prev=lambda: self.signals.prev_chapter.emit(),
@@ -3172,6 +3356,15 @@ class SmartClipboardOverlay(QWidget):
         clipboard = QApplication.clipboard()
         self._last_clipboard_text = clipboard.text() or ""
         clipboard.dataChanged.connect(self._clipboard_data_changed)
+        # macOS fallback: poll the pasteboard changeCount so copies made in
+        # another app (while INKCOPY is a background overlay) are still caught.
+        if sys.platform == "darwin":
+            self._last_pasteboard_change_count = self._read_pasteboard_change_count()
+            if self._mac_pasteboard_poll_timer is None:
+                self._mac_pasteboard_poll_timer = QTimer(self)
+                self._mac_pasteboard_poll_timer.setInterval(300)  # ms
+                self._mac_pasteboard_poll_timer.timeout.connect(self._poll_mac_pasteboard)
+            self._mac_pasteboard_poll_timer.start()
 
     def _stop_clipboard_monitor(self):
         try:
@@ -3183,6 +3376,27 @@ class SmartClipboardOverlay(QWidget):
         if self._clipboard_check_timer is not None:
             self._clipboard_check_timer.stop()
             self._clipboard_check_timer = None
+        if self._mac_pasteboard_poll_timer is not None:
+            self._mac_pasteboard_poll_timer.stop()
+
+    def _read_pasteboard_change_count(self) -> int:
+        """macOS NSPasteboard.changeCount(), or -1 if unavailable."""
+        try:
+            from AppKit import NSPasteboard
+            return int(NSPasteboard.generalPasteboard().changeCount())
+        except Exception:
+            return -1
+
+    def _poll_mac_pasteboard(self):
+        """macOS COPY/VOCAB fallback: detect a pasteboard change and route it
+        through the same handler so all mode/paused/ignore guards still apply."""
+        if sys.platform != "darwin":
+            return
+        cc = self._read_pasteboard_change_count()
+        if cc < 0 or cc == self._last_pasteboard_change_count:
+            return
+        self._last_pasteboard_change_count = cc
+        self._clipboard_data_changed()
 
     def _clipboard_data_changed(self):
         """On Windows, clipboard may not be updated yet when dataChanged fires. Defer read."""
@@ -3626,7 +3840,7 @@ class SmartClipboardOverlay(QWidget):
             return
         self.current_index = 0
         self.paused = False
-        self.pause_btn.setText("⏸ Pause")
+        self._set_pause_text("⏸ Pause")
         if self.mode == self.MODE_PASTE:
             self._load_clipboard_paste_mode()
         else:
@@ -3635,11 +3849,11 @@ class SmartClipboardOverlay(QWidget):
     def _toggle_pause(self):
         self.paused = not self.paused
         if self.paused:
-            self.pause_btn.setText("▶ Resume")
+            self._set_pause_text("▶ Resume")
             self.status_label.setText("[PAUSED]  Press F12 or Resume to continue")
             self.status_label.setStyleSheet("#status { color: #ffcc00; }")
         else:
-            self.pause_btn.setText("⏸ Pause")
+            self._set_pause_text("⏸ Pause")
             self.status_label.setStyleSheet("")
             if self.mode == self.MODE_PASTE:
                 self._load_clipboard_paste_mode()
@@ -3650,13 +3864,26 @@ class SmartClipboardOverlay(QWidget):
     def _toggle_minimize(self):
         self.minimized = not self.minimized
         if self.minimized:
+            # Minimized = compact HUD: keep mode + chapter status + title buttons
+            # + prev/pause/next; hide the content and the diagnostics/log row
+            # (accessibility status + Open Log) so it stays clean.
             self.content_widget.hide()
+            self._row_diag.hide()
+            self._mini_controls.show()
             self.minimize_btn.setText("□")
             self.adjustSize()
         else:
             self.content_widget.show()
+            self._row_diag.show()
+            self._mini_controls.hide()
             self.minimize_btn.setText("−")
             self.adjustSize()
+
+    def _set_pause_text(self, text: str):
+        """Keep the full and minimized pause buttons in sync."""
+        self.pause_btn.setText(text)
+        if hasattr(self, "mini_pause_btn"):
+            self.mini_pause_btn.setText(text)
 
     # ============================================================ TOAST NOTIFICATION
     def _show_toast(self, message: str, action_type: str):
@@ -3664,6 +3891,9 @@ class SmartClipboardOverlay(QWidget):
             self.toast.close()
         self.toast = ToastNotification(message, action_type)
         self.toast.show()
+        # Same macOS fix: the toast must show over the focused app (Chrome),
+        # otherwise the "PASTED/SAVED" confirmation never appears on macOS.
+        _macos_make_floating_overlay(self.toast)
 
     # ============================================================ DIAGNOSTICS
     def _start_diagnostics(self):
@@ -3708,6 +3938,23 @@ class SmartClipboardOverlay(QWidget):
                 bits.append("🟢 Input Monitoring: granted")
             else:
                 bits.append("🟡 Input Monitoring: unknown")
+
+            # Auto-recover: if the user grants Accessibility / Input Monitoring
+            # while INKCOPY is already running, the listener (started without
+            # permission) keeps receiving ZERO events — so a Cmd+V pastes into
+            # the target app but is never detected and the chapter never
+            # advances. Detect the False→True permission edge and restart the
+            # listener so paste-advance starts working WITHOUT a Quit & reopen.
+            if registered:
+                prev_ax = getattr(self, "_ax_last", None)
+                prev_im = getattr(self, "_im_last", None)
+                if (ax_trusted is True and prev_ax is False) or (
+                    im_trusted is True and prev_im is False
+                ):
+                    _log("macOS permission granted at runtime — restarting hotkey listener")
+                    self._restart_hotkeys()
+                self._ax_last = ax_trusted
+                self._im_last = im_trusted
 
         if not registered:
             bits.append("⚪ Hotkeys not registered yet — set Prompt + Chapter folder first")
