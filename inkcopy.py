@@ -2141,9 +2141,21 @@ class SmartClipboardOverlay(QWidget):
         self._row_concurrent.setLayout(concurrent_row)
         content_layout.addWidget(self._row_concurrent)
 
-        # -- content start line selector (for Copy mode)
+        # -- Copy mode formatting (one group): "filename on first line" + which
+        #    line the content starts at. The line selector is a sub-option of the
+        #    checkbox, so they're grouped and indented together.
+        self.copy_template_checkbox = QCheckBox("ใส่ชื่อไฟล์ไว้บรรทัดแรก")
+        self.copy_template_checkbox.setObjectName("checkBox")
+        self.copy_template_checkbox.setChecked(True)
+        self.copy_template_checkbox.setToolTip(
+            "ติ๊ก = ชื่อไฟล์อยู่บรรทัดแรก แล้ววางเนื้อหาตามเลขบรรทัดด้านล่าง\n"
+            "ไม่ติ๊ก = บันทึกเนื้อหาเริ่มที่บรรทัดแรกเลย (ไม่มีชื่อไฟล์)"
+        )
+        self.copy_template_checkbox.stateChanged.connect(self._on_copy_template_checkbox_changed)
+
         line_row = QHBoxLayout()
-        self.line_label = QLabel("Content at line:")
+        line_row.addSpacing(22)  # indent so it reads as a sub-option of the checkbox
+        self.line_label = QLabel("เนื้อหาเริ่มที่บรรทัด:")
         self.line_label.setObjectName("info")
         self.line_minus_btn = QPushButton("−")
         self.line_minus_btn.setObjectName("controlBtn")
@@ -2163,17 +2175,14 @@ class SmartClipboardOverlay(QWidget):
         line_row.addStretch()
         self._row_line = QWidget()
         self._row_line.setLayout(line_row)
-        content_layout.addWidget(self._row_line)
 
-        copy_checkbox_row = QHBoxLayout()
-        self.copy_template_checkbox = QCheckBox("Copy Mode: include filename + spacing")
-        self.copy_template_checkbox.setObjectName("checkBox")
-        self.copy_template_checkbox.setChecked(True)
-        self.copy_template_checkbox.stateChanged.connect(self._on_copy_template_checkbox_changed)
-        copy_checkbox_row.addWidget(self.copy_template_checkbox)
-        copy_checkbox_row.addStretch()
+        copy_group = QVBoxLayout()
+        copy_group.setContentsMargins(0, 0, 0, 0)
+        copy_group.setSpacing(4)
+        copy_group.addWidget(self.copy_template_checkbox)
+        copy_group.addWidget(self._row_line)
         self._row_copy_template = QWidget()
-        self._row_copy_template.setLayout(copy_checkbox_row)
+        self._row_copy_template.setLayout(copy_group)
         content_layout.addWidget(self._row_copy_template)
 
         # -- checkbox controls for prompt and chapter inclusion

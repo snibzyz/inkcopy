@@ -159,6 +159,63 @@ def test_copy_mode_saves_clipboard_to_file(ik, tmp_path):
     assert ik.current_index == 1          # advanced exactly one chapter
 
 
+def test_copy_mode_template_off_content_on_first_line(ik, tmp_path):
+    """Unchecking the copy-template checkbox saves the copied content starting
+    on line 1 (no chapter title) — the option some users want."""
+    configure_copy(ik, str(tmp_path), concurrent=1)
+    ik.copy_template_enabled = False          # checkbox OFF
+    ik._last_clipboard_text = ""
+    ik._ignore_clipboard_change = False
+
+    QApplication.clipboard().setText("เนื้อหาบรรทัดแรก CONTENT FIRST")
+    ik._clipboard_check_deferred()
+
+    out_files = list(tmp_path.glob("*.txt"))
+    assert len(out_files) == 1
+    body = out_files[0].read_text(encoding="utf-8-sig")
+    assert body.splitlines()[0] == "เนื้อหาบรรทัดแรก CONTENT FIRST"  # content on line 1
+    assert "chapter0001" not in body                                   # no title
+
+
+def test_copy_mode_template_on_title_on_first_line(ik, tmp_path):
+    """With the checkbox ON (default), the chapter title is on the first line."""
+    configure_copy(ik, str(tmp_path), concurrent=1)
+    ik.copy_template_enabled = True
+    ik.content_start_line = 3
+    ik._last_clipboard_text = ""
+    ik._ignore_clipboard_change = False
+
+    QApplication.clipboard().setText("translated body")
+    ik._clipboard_check_deferred()
+
+    body = list(tmp_path.glob("*.txt"))[0].read_text(encoding="utf-8-sig")
+    assert body.splitlines()[0].startswith("chapter0001")   # title on line 1
+    assert "translated body" in body
+
+
+def test_copy_settings_persist_across_sessions(qapp, tmp_path, monkeypatch):
+    """The copy-template choice + content line must survive an app restart."""
+    import inkcopy
+
+    monkeypatch.setattr(inkcopy, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(inkcopy, "CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setattr(inkcopy.SmartClipboardOverlay, "_register_hotkeys", lambda s: None)
+    monkeypatch.setattr(inkcopy.SmartClipboardOverlay, "_start_update_check", lambda s: None)
+    monkeypatch.setattr(inkcopy.SmartClipboardOverlay, "_start_diagnostics", lambda s: None)
+
+    ov = inkcopy.SmartClipboardOverlay()
+    ov.copy_template_checkbox.setChecked(False)   # persists via _save_config
+    ov._increase_line()
+    ov._increase_line()                           # 3 -> 5, persists
+    ov.close()
+
+    ov2 = inkcopy.SmartClipboardOverlay()         # fresh session reloads config
+    assert ov2.copy_template_enabled is False
+    assert ov2.content_start_line == 5
+    assert ov2.copy_template_checkbox.isChecked() is False
+    ov2.close()
+
+
 def test_copy_mode_ignores_self_writes(ik, tmp_path):
     configure_copy(ik, str(tmp_path), concurrent=1)
     ik._ignore_clipboard_change = True    # app is mid-write
