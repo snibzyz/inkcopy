@@ -1,6 +1,6 @@
 {
   "name": "@inkcopy/desktop-shell",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "INKCOPY desktop shell — Electron + React renderer",
   "main": "electron/main.cjs",
