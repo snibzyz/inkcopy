@@ -72,6 +72,6 @@ INKCOPY มี 2 implementation ขนานกัน:
 แอปนี้เป็นส่วนหนึ่งของตระกูล INK. **ภาพรวม + ความเชื่อมโยงข้ามแอป** อยู่ใน Obsidian vault กลาง (path เต็มใช้ได้จากทุก worktree บนเครื่องนี้):
 - `Z:/Mega Project/INK Vault/Home.md` — แผนผังครอบครัว INK (pipeline: INKCRAW→INKMAGIC/INKIDEA→INKTTS→INKREALM)
 - `Z:/Mega Project/INK Vault/Apps/INKCOPY.md` — ภาพรวมแอปนี้ · `INK Vault/Topics/` — Shared System / Design / Electron / Infra
-- docs structure มาตรฐาน (.claude/.docs/.implement ทุกแอป) → `Z:/Mega Project/.shared/docs-structure.md`
+- docs structure มาตรฐาน (.claude (ซ่อน) + docs + implement) → `Z:/Mega Project/.shared/docs-structure.md`
 
 เมื่อต้องเข้าใจภาพใหญ่ หรือทำงานคร่อมหลายแอป → อ่าน vault ก่อนลงมือ.
