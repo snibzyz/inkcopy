@@ -120,7 +120,15 @@ jobs:
 
   electron-windows:
     name: Electron Windows
-    runs-on: windows-latest
+    # Pinned, NOT windows-latest. On 2026-07-19 that label started resolving to
+    # the "windows-2025-vs2026" image, and node-gyp 9.4.1 (pulled in via
+    # @electron/rebuild) only knows how to detect up to VS2022 -- so building
+    # the uiohook-napi native module died with "Could not find any Visual
+    # Studio installation to use". The same tag built fine on 2026-06-12 under
+    # the plain "windows-2025" image. The Electron shell is frozen at 0.3.1, so
+    # pinning its build environment is the matching move; revisit only if the
+    # shell is unfrozen (then bump node-gyp instead).
+    runs-on: windows-2025
     steps:
       - name: Checkout
         uses: actions/checkout@v4
