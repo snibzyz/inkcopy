@@ -53,6 +53,7 @@ def check_modules():
 
 check_modules()
 
+import codecs
 import json
 import re
 import time
@@ -70,7 +71,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
@@ -506,8 +507,20 @@ def load_config() -> dict:
             except Exception:
                 pass
     if os.path.isfile(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+        # A corrupt/truncated config must never block startup — back it up so
+        # the user's settings aren't silently lost, then start fresh.
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+            _log(f"Config is {type(data).__name__}, not an object — ignoring")
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            _log(f"Config unreadable ({exc}) — starting with defaults")
+            try:
+                os.replace(CONFIG_PATH, CONFIG_PATH + ".bad")
+            except OSError:
+                pass
     return {}
 
 
@@ -3236,15 +3249,48 @@ class SmartClipboardOverlay(QWidget):
         total = sum(row_heights) + row_spacing * (len(row_heights) - 1) + layout_margins
         self.prompt_list_scroll.setFixedHeight(total + self._px(4))  # fudge for borders
 
-    @staticmethod
-    def _read_local_file_as_text(path: str, label: str) -> str:
+    # Single-byte fallbacks, tried in order when a file isn't valid UTF-8.
+    # cp874 = Thai (TIS-620) legacy files from Notepad/older editors;
+    # cp1252 = Western fallback. UTF-16 is NOT in this list on purpose: it
+    # decodes almost any even-length bytes into mojibake, so it's only used
+    # when a BOM actually says so.
+    _TEXT_ENCODINGS = ("cp874", "cp1252")
+
+    @classmethod
+    def _decode_text_bytes(cls, raw: bytes) -> str:
+        # A BOM is authoritative — trust it before guessing.
+        if raw.startswith(codecs.BOM_UTF8):
+            return raw.decode("utf-8-sig", errors="replace")
+        if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+            return raw.decode("utf-16", errors="replace")
+        for enc in ("utf-8",) + cls._TEXT_ENCODINGS:
+            try:
+                return raw.decode(enc)
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        # Never fail: garbled chars beat a crash / lost chapter.
+        return raw.decode("utf-8", errors="replace")
+
+    @classmethod
+    def _read_local_file_as_text(cls, path: str, label: str) -> str:
+        # A path still ending in .lnk means _resolve_shortcut() failed (its
+        # PowerShell call can time out on a cold start, or the target is an
+        # un-hydrated OneDrive placeholder). Reading the shortcut itself would
+        # paste raw binary into the chat, so refuse instead.
+        if path.lower().endswith(".lnk"):
+            _log(f"Unresolved shortcut, refusing to read as text: {path}")
+            return f"[shortcut เปิดไม่ได้: {label}]"
         try:
-            # utf-8-sig handles both BOM-prefixed (Windows Notepad) and plain
-            # UTF-8 files transparently — Thai text stays intact either way.
-            with open(path, "r", encoding="utf-8-sig") as f:
-                return f.read()
+            # Read as bytes so a non-UTF-8 file falls back instead of raising
+            # UnicodeDecodeError (which used to kill startup from _load_saved_config).
+            with open(path, "rb") as f:
+                raw = f.read()
         except OSError:
             return f"[อ่านไฟล์ไม่ได้: {label}]"
+        text = cls._decode_text_bytes(raw)
+        if "�" in text:
+            _log(f"Encoding fallback (lossy) while reading: {path}")
+        return text
 
     def _on_copy_template_checkbox_changed(self, state):
         self.copy_template_enabled = (state == Qt.CheckState.Checked.value)
@@ -3323,12 +3369,12 @@ class SmartClipboardOverlay(QWidget):
         
         # Count existing entries if file exists
         if os.path.isfile(self.vocab_file_path):
-            # utf-8-sig transparently strips BOM if present (from prior writes).
-            with open(self.vocab_file_path, "r", encoding="utf-8-sig") as f:
-                content = f.read()
-                # Count non-empty blocks separated by blank lines
-                blocks = [b.strip() for b in content.split("\n\n") if b.strip()]
-                self.vocab_entry_count = len(blocks)
+            content = self._read_local_file_as_text(
+                self.vocab_file_path, os.path.basename(self.vocab_file_path)
+            )
+            # Count non-empty blocks separated by blank lines
+            blocks = [b.strip() for b in content.split("\n\n") if b.strip()]
+            self.vocab_entry_count = len(blocks)
         else:
             self.vocab_entry_count = 0
         
