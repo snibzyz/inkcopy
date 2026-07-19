@@ -1,18 +1,27 @@
 # INKCOPY — per-app memory
 
-## Status (2026-05-26)
+## Status (2026-07-19)
 
-INKCOPY มี 2 implementation ขนานกัน:
+INKCOPY มี 2 implementation ขนานกัน — **ทั้งคู่ถูก release ผ่าน CI เดียวกัน**:
 
 | Implementation | Path | สถานะ |
 |---|---|---|
-| **Python / PyQt6** (canonical) | `inkcopy.py` + `INKCOPY.spec` | ใช้งานจริง — release ผ่าน CI (`.exe` + `.dmg`) |
-| **Electron** (WIP) | `.app/shell/` | scaffolded จาก `.shared/` — ยังไม่มี feature parity |
+| **Python / PyQt6** (canonical) | `inkcopy.py` + `INKCOPY.spec` | ใช้งานจริง · เวอร์ชันเดินหน้าต่อ (ล่าสุด v0.3.2) |
+| **Electron** | `.app/shell/` | **implement จริงแล้ว** ~5,600 บรรทัด · frozen ที่ v0.3.1 |
+
+> **อย่าลบ `.app/shell/` เด็ดขาดโดยไม่ถามก่อน.** เอกสารเดิมเขียนว่า "scaffolded — ยังไม่มี
+> implementation" ซึ่ง **ผิด** และเกือบทำให้ลบงานจริงทิ้ง (2026-07-19). ของจริงที่มี:
+> 14 React components, IPC 8 ตัว (clipboard/hotkey/permissions/settings/dialog/shell/fs/window),
+> Playwright E2E 5 ชุด + screenshot snapshots ทั้ง win32/darwin, 12 commits ฟีเจอร์.
+> commit `ebac659` = paste/copy/next/prev/auto-switch + overlay ทำงานได้บน macOS แล้ว.
 
 **กฎระหว่าง transition:**
 - Bug ที่ user รายงาน → fix ใน Python ก่อน (canonical)
-- Feature ใหม่ → ลง Electron port (เพื่อไม่ทับซ้อนทำงานคู่)
-- เมื่อ Electron มี feature parity ครบ → Python deprecate
+- Electron = frozen — ไม่ต้อง bump version พร้อม Python (ตั้งแต่ v0.3.2 เป็นต้นไป
+  `.app/shell/package.json` ค้างที่ 0.3.1 โดยตั้งใจ เพราะโค้ดไม่ได้แก้)
+- **release.yml: job `publish` ตั้ง `needs:` รวม electron-windows/electron-macos**
+  → ถ้า Electron build พัง จะไม่มีอะไรถูก publish เลย รวมทั้ง Python. ปล่อย Python
+  เดี่ยว ๆ ไม่ได้ถ้าไม่แก้ workflow ก่อน
 
 ## Python (canonical)
 
