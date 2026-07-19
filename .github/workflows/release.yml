@@ -118,17 +118,21 @@ jobs:
           name: python-macos-${{ env.RELEASE_TAG }}
           path: artifacts/*
 
+  # KNOWN BROKEN as of 2026-07-19, and deliberately non-blocking -- see the
+  # `publish` job's `if:`. Building the uiohook-napi native module fails with
+  # "Could not find any Visual Studio installation to use": GitHub moved its
+  # Windows images to Visual Studio 2026, and node-gyp 9.4.1 (pinned in the
+  # lockfile via @electron/rebuild 3.6.1) only detects up to VS2022. This same
+  # job passed on 2026-06-12 under the older image.
+  #
+  # Pinning `runs-on` does NOT help: windows-latest and windows-2025 both now
+  # resolve to the windows-2025-vs2026 image (verified, not assumed). The real
+  # fix is a pnpm override bumping node-gyp to v11, which means regenerating
+  # the lockfile -- deferred because the Electron shell is frozen at 0.3.1 and
+  # its artifacts are unchanged since that release.
   electron-windows:
     name: Electron Windows
-    # Pinned, NOT windows-latest. On 2026-07-19 that label started resolving to
-    # the "windows-2025-vs2026" image, and node-gyp 9.4.1 (pulled in via
-    # @electron/rebuild) only knows how to detect up to VS2022 -- so building
-    # the uiohook-napi native module died with "Could not find any Visual
-    # Studio installation to use". The same tag built fine on 2026-06-12 under
-    # the plain "windows-2025" image. The Electron shell is frozen at 0.3.1, so
-    # pinning its build environment is the matching move; revisit only if the
-    # shell is unfrozen (then bump node-gyp instead).
-    runs-on: windows-2025
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -212,7 +216,17 @@ jobs:
           path: artifacts/*
 
   publish:
+    # Waits for all four builds so any Electron artifact that DID build still
+    # gets attached -- but only Python decides whether the release ships.
+    # Python is the canonical implementation; the frozen Electron shell must
+    # not be able to block a Python bugfix from reaching users, which is
+    # exactly what happened to v0.3.2 (both Python builds passed and were
+    # discarded because electron-windows failed).
     needs: [python-windows, python-macos, electron-windows, electron-macos]
+    if: >-
+      always()
+      && needs.python-windows.result == 'success'
+      && needs.python-macos.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

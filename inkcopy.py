@@ -71,7 +71,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIntValidator
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 UPDATE_REPO = "snibzyz/inkcopy"
 
 
